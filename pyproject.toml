@@ -1,58 +1,137 @@
+# https://peps.python.org/pep-0517/
 [build-system]
-requires = ["setuptools>=42.0.0", "wheel", "setuptools_scm"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
 
+# https://peps.python.org/pep-0621/
+[project]
+name = "napari-sam-prompt"
+description = "A napari plugin that implements SAM prompts predictor."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "BSD 3-Clause License" }
+authors = [
+    { name = "Federico Gasparoli", email = "federico.gasparoli@gmail.com" },
+]
 
-[tool.setuptools_scm]
-write_to = "src/napari_sam_prompt/_version.py"
+dynamic = ["version"]
+dependencies = [
+    "napari >=0.4.19",
+]
 
-[tool.black]
-line-length = 79
-target-version = ['py38', 'py39', 'py310']
+# extras
+# https://peps.python.org/pep-0621/#dependencies-optional-dependencies
+[project.optional-dependencies]
+test = ["pytest", "pytest-cov", "pytest-qt"]
+pyqt5 = ["PyQt5"]
+pyqt6 = ["PyQt6"]
+pyside2 = ["PySide2"]
+pyside6 = ["PySide6"]
+dev = ["isort", "mda-simulator", "mypy", "pre-commit", "ruff"]
+docs = ["mkdocs-material", "mkdocstrings-python"]
 
+[project.urls]
+Source = "https://github.com/fdrgsp/napari-sam-prompt"
+Tracker = "https://github.com/fdrgsp/napari-sam-prompt/issues"
 
+[project.scripts]
+napari-sam-prompt = "napari_sam_prompt.__main__:main"
+
+[project.entry-points."napari.manifest"]
+"napari-sam-prompt" = "napari_sam_prompt:napari.yaml"
+
+# https://hatch.pypa.io/latest/config/metadata/
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests"]
+
+# https://beta.ruff.rs/docs/rules/
 [tool.ruff]
-line-length = 79
+line-length = 88
+target-version = "py38"
+
+[tool.ruff.lint]
+pydocstyle = { convention = "numpy" }
 select = [
-    "E", "F", "W", #flake8
-    "UP", # pyupgrade
-    "I", # isort
-    "BLE", # flake8-blind-exception
-    "B", # flake8-bugbear
-    "A", # flake8-builtins
-    "C4", # flake8-comprehensions
-    "ISC", # flake8-implicit-str-concat
-    "G", # flake8-logging-format
-    "PIE", # flake8-pie
-    "SIM", # flake8-simplify
+    "E",    # style errors
+    "W",    # warnings
+    "F",    # flakes
+    "D",    # pydocstyle
+    "D417", # Missing argument descriptions in Docstrings
+    "I",    # isort
+    "UP",   # pyupgrade
+    "S",    # bandit
+    "C4",   # flake8-comprehensions
+    "B",    # flake8-bugbear
+    "A001", # flake8-builtins
+    "RUF",  # ruff-specific rules
+    "TCH",  # flake8-type-checking
+    "TID",  # flake8-tidy-imports
 ]
 ignore = [
-    "E501", # line too long. let black handle this
-    "UP006", "UP007", # type annotation. As using magicgui require runtime type annotation then we disable this.
-    "SIM117", # flake8-simplify - some of merged with statements are not looking great with black, reanble after drop python 3.9
+    "D100", # Missing docstring in public module
+    "D401", # First line should end with a period
 ]
 
-exclude = [
-    ".bzr",
-    ".direnv",
-    ".eggs",
-    ".git",
-    ".mypy_cache",
-    ".pants.d",
-    ".ruff_cache",
-    ".svn",
-    ".tox",
-    ".venv",
-    "__pypackages__",
-    "_build",
-    "buck-out",
-    "build",
-    "dist",
-    "node_modules",
-    "venv",
-    "*vendored*",
-    "*_vendor*",
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["D", "S"]
+
+# https://docs.astral.sh/ruff/formatter/
+[tool.ruff.format]
+docstring-code-format = true
+
+# https://docs.pytest.org/en/6.2.x/customize.html
+[tool.pytest.ini_options]
+minversion = "6.0"
+testpaths = ["tests"]
+filterwarnings = [
+    "error",
+    "ignore:distutils Version classes are deprecated",
+    "ignore::DeprecationWarning:ipykernel",
+    "ignore:<tifffile.TiffWriter.write> data with shape:DeprecationWarning:", # for napari
+    "ignore:`np.bool8` is a deprecated alias::skimage",
+    "ignore:Jupyter is migrating its paths to use standard platformdirs:",
+    "ignore:\\nPyarrow will become a required dependency",
+    "ignore::DeprecationWarning:docstring_parser",                            # via magicgui, in py312
 ]
 
-target-version = "py38"
-fix = true
+# https://mypy.readthedocs.io/en/stable/config_file.html
+[tool.mypy]
+files = "src/**/*.py"
+strict = true
+disallow_any_generics = false
+disallow_subclassing_any = false
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = [
+    "qtpy.*",
+    "superqt.*",
+    "napari.*",
+    "zarr.*",
+    "tifffile.*",
+]
+ignore_missing_imports = true
+
+# https://github.com/mgedmin/check-manifest#configuration
+[tool.check-manifest]
+ignore = [".pre-commit-config.yaml", "launch-dev.py", "codecov.yml"]
+
+# https://coverage.readthedocs.io/en/6.4/config.html
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "@overload",
+    "except ImportError",
+    "raise AssertionError",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
+
+[tool.coverage.run]
+source = ["src/napari_sam_prompt"]

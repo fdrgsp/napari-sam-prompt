@@ -1,44 +1,11 @@
 name: napari-sam-prompt
 display_name: Napari SAM Prompt
-# use 'hidden' to remove plugin from napari hub search results
-visibility: public
-# see https://napari.org/stable/plugins/manifest.html for valid categories
-categories: ["Annotation", "Segmentation", "Acquisition"]
+visibility: hidden
 contributions:
   commands:
-    - id: napari-sam-prompt.get_reader
-      python_name: napari_sam_prompt._reader:napari_get_reader
-      title: Open data with Napari SAM Prompt
-    - id: napari-sam-prompt.make_sample_data
-      python_name: napari_sam_prompt._sample_data:make_sample_data
-      title: Load sample data from Napari SAM Prompt
-    - id: napari-sam-prompt.make_container_widget
-      python_name: napari_sam_prompt:ImageThreshold
-      title: Make threshold Container widget
-    - id: napari-sam-prompt.make_magic_widget
-      python_name: napari_sam_prompt:threshold_magic_widget
-      title: Make threshold magic widget
-    - id: napari-sam-prompt.make_function_widget
-      python_name: napari_sam_prompt:threshold_autogenerate_widget
-      title: Make threshold function widget
-    - id: napari-sam-prompt.make_qwidget
-      python_name: napari_sam_prompt:ExampleQWidget
-      title: Make example QWidget
-  readers:
-    - command: napari-sam-prompt.get_reader
-      accepts_directories: false
-      filename_patterns: ['*.npy']
-  sample_data:
-    - command: napari-sam-prompt.make_sample_data
-      display_name: Napari SAM Prompt
-      key: unique_id.1
+  - id: napari-sam-prompt.MainWindow
+    title: Create Main Window
+    python_name: napari-sam-prompt.main_window:MainWindow
   widgets:
-    - command: napari-sam-prompt.make_container_widget
-      display_name: Container Threshold
-    - command: napari-sam-prompt.make_magic_widget
-      display_name: Magic Threshold
-    - command: napari-sam-prompt.make_function_widget
-      autogenerate: true
-      display_name: Autogenerate Threshold
-    - command: napari-sam-prompt.make_qwidget
-      display_name: Example QWidget
+  - command: napari-sam-prompt.MainWindow
+    display_name: Main Window
