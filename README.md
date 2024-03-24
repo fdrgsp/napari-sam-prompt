@@ -45,7 +45,13 @@ The plugin also requires pytorch>=1.7 and torchvision>=0.8. Please follow the in
 pip install git+https://github.com/facebookresearch/segment-anything.git
 ```
 
-A checkpoint model is required to run the plugin. Download a model from [here](https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints) and place it in the `napari_sam_prompt/model_checkpoints` directory.
+A checkpoint model is required to run the plugin. Download a model from [here](https://github.com/facebookresearch/segment-anything?tab=readme-ov-file#model-checkpoints).
+
+### To Run
+
+```bash
+python -m napari_sam_prompt -mc "path/to/model/checkpoint.pth" -mt "model_type"
+```
 
 ## Contributing
 

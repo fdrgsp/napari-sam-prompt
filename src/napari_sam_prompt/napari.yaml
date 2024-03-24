@@ -3,9 +3,9 @@ display_name: Napari SAM Prompt
 visibility: hidden
 contributions:
   commands:
-  - id: napari-sam-prompt.MainWindow
+  - id: napari-sam-prompt.SamPromptWidget
     title: Create Main Window
-    python_name: napari-sam-prompt.main_window:MainWindow
+    python_name: napari-sam-prompt.main_window:SamPromptWidget
   widgets:
-  - command: napari-sam-prompt.MainWindow
+  - command: napari-sam-prompt.SamPromptWidget
     display_name: Main Window
