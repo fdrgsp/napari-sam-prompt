@@ -23,16 +23,7 @@ https://napari.org/stable/plugins/index.html
 
 ## Installation
 
-You can install `napari-sam-prompt` via [pip]:
-
-    pip install napari-sam-prompt
-
-
-
-To install latest development version :
-
-    pip install git+https://github.com/fdrgsp/napari-sam-prompt.git
-
+pip install git+https://github.com/fdrgsp/napari-sam-prompt.git
 
 ## Contributing
 
