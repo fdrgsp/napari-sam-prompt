@@ -92,7 +92,7 @@ class SamPromptWidget(QWidget):
         _image_group_layout.addWidget(self._add_points_layer_btn, 0, 2)
 
         # add mask predictor
-        _predictor_group = QGroupBox("Predictor")
+        _predictor_group = QGroupBox("SAM Predictor")
         _predictor_group_layout = QGridLayout(_predictor_group)
         self._standard_radio = QRadioButton("Standard Predictor")
         self._standard_radio.setChecked(True)
@@ -116,6 +116,18 @@ class SamPromptWidget(QWidget):
         self._viewer.layers.events.changed.connect(self._on_layers_changed)
         self._viewer.layers.events.inserted.connect(self._on_layers_changed)
         self._viewer.layers.events.removed.connect(self._on_layers_changed)
+
+    def _enable(self, state: bool) -> None:
+        """Enable or disable the widget."""
+        self._model_le.setEnabled(state)
+        self._model_browse_btn.setEnabled(state)
+        self._model_type_le.setEnabled(state)
+        self._load_modle_btn.setEnabled(state)
+        self._image_combo.setEnabled(state)
+        self._add_points_layer_btn.setEnabled(state)
+        self._standard_radio.setEnabled(state)
+        self._loop_radio.setEnabled(state)
+        self._generate_mask_btn.setEnabled(state)
 
     def _browse_model(self) -> None:
         """Open a file dialog to select the SAM Model Checkpoint."""
@@ -178,6 +190,8 @@ class SamPromptWidget(QWidget):
                 name=f"{layer}_points [BACKGROUND]",
                 ndim=2,
                 metadata={"id": layer, "type": 0},
+                edge_color="magenta",
+                face_color="magenta",
             )
 
         if (layer, 1) not in layers_meta:
@@ -185,6 +199,8 @@ class SamPromptWidget(QWidget):
                 name=f"{layer}_points [FOREGROUND]",
                 ndim=2,
                 metadata={"id": layer, "type": 1},
+                edge_color="green",
+                face_color="green",
             )
 
     def _on_predict(self) -> None:
@@ -247,20 +263,26 @@ class SamPromptWidget(QWidget):
         background_points: list[tuple[tuple[int, int], int]],
     ) -> None:
         """Run the SamPredictor."""
-        image = self._convert_image_to_8bit(layer_name)
-        self._predictor.set_image(image)
+        self._enable(False)
+        try:
+            image = self._convert_image_to_8bit(layer_name)
+            self._predictor.set_image(image)
 
-        if self._standard_radio.isChecked():
-            masks, scores = self._standard_predictor(
-                foreground_points, background_points
-            )
-        else:
-            masks, scores = self._loop_predictor(foreground_points)
+            if self._standard_radio.isChecked():
+                masks, scores = self._standard_predictor(
+                    foreground_points, background_points
+                )
+            else:
+                masks, scores = self._loop_predictor(foreground_points)
 
-        if console := getattr(self._viewer.window._qt_viewer, "console", None):
-            console.push({"masks": masks, "scores": scores})
+            if console := getattr(self._viewer.window._qt_viewer, "console", None):
+                console.push({"masks": masks, "scores": scores})
 
-        self._display_labels(layer_name, masks)
+            self._display_labels(layer_name, masks, self._standard_radio.isChecked())
+        except Exception as e:
+            print(e)
+        finally:
+            self._enable(True)
 
     def _standard_predictor(
         self,
@@ -328,11 +350,15 @@ class SamPromptWidget(QWidget):
         img_8bit = np.stack((img_8bit, img_8bit, img_8bit), axis=-1)
         return img_8bit
 
-    def _display_labels(self, layer_name: str, masks: list[np.ndarray]) -> None:
+    def _display_labels(
+        self, layer_name: str, masks: list[np.ndarray], standard: bool
+    ) -> None:
         """Display the masks as labels in the viewer."""
+        _type = "Standard" if standard else "Loop"
+        name = f"{layer_name}_mask[{_type}]"
         if len(masks) == 1:
             labeled_mask = measure.label(masks[0])
-            self._viewer.add_labels(labeled_mask, name=f"{layer_name}_mask")
+            self._viewer.add_labels(labeled_mask, name=name)
             return
 
         final_mask = np.zeros_like(masks[0], dtype=np.int32)
@@ -340,4 +366,4 @@ class SamPromptWidget(QWidget):
             labeled_mask = measure.label(mask)
             labeled_mask[labeled_mask != 0] += final_mask.max()
             final_mask += labeled_mask
-        self._viewer.add_labels(final_mask, name=f"{layer_name}_mask")
+        self._viewer.add_labels(final_mask, name=name)
