@@ -49,6 +49,8 @@ class SamPromptWidget(QWidget):
 
         self._viewer = viewer
 
+        self._console = getattr(self._viewer.window._qt_viewer, "console", None)
+
         self._sam: Sam | None = None
         self._predictor: SamPredictor | None = None
         self._mask_generator: SamAutomaticMaskGenerator | None = None
@@ -277,6 +279,9 @@ class SamPromptWidget(QWidget):
 
         self._load_info_lbl.setText(_loaded_status)
 
+        if self._console:
+            self._console.push({"sam": self._sam, "predictor": self._predictor})
+
     def _load(
         self, model_checkpoint: str, model_type: str
     ) -> Generator[tuple[bool, str], None, None]:
@@ -286,6 +291,7 @@ class SamPromptWidget(QWidget):
         try:
             self._sam = sam_model_registry[model_type](checkpoint=model_checkpoint)
         except Exception as e:
+            self._sam = None
             yield False, ""
             print(e)
 
@@ -294,6 +300,7 @@ class SamPromptWidget(QWidget):
         try:
             self._predictor = SamPredictor(self._sam)
         except Exception as e:
+            self._predictor = None
             yield False, ""
             print(e)
 
@@ -416,8 +423,8 @@ class SamPromptWidget(QWidget):
         """Display the masks in a stack."""
         masks, layer_name = args
 
-        if console := getattr(self._viewer.window._qt_viewer, "console", None):
-            console.push({"masks": masks})
+        if self._console:
+            self._console.push({"masks": masks})
 
         segmented: list[np.ndarray] = [
             mask["segmentation"]
@@ -655,8 +662,8 @@ class SamPromptWidget(QWidget):
         """Display the masks as labels in the viewer."""
         layer_name, masks, scores, standard = args
 
-        if console := getattr(self._viewer.window._qt_viewer, "console", None):
-            console.push({"masks": masks, "scores": scores})
+        if self._console:
+            self._console.push({"masks": masks, "scores": scores})
 
         _type = "Standard" if standard else "Loop"
         name = f"{layer_name}_labels[{_type}]"
