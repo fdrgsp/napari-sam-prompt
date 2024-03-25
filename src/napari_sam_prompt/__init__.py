@@ -1,9 +1,11 @@
 """A napari plugin that implements SAM prompts predictor."""
 
+from importlib.metadata import PackageNotFoundError, version
+
 try:
-    from ._version import version as __version__
-except ImportError:
-    __version__ = "unknown"
+    __version__ = version("napari-sam-prompt")
+except PackageNotFoundError:
+    __version__ = "uninstalled"
 
 from ._sam_prompt_widget import SamPromptWidget
 
