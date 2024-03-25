@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Generator, cast
 
 import napari.layers
 import napari.viewer
@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from qtpy.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -16,12 +17,14 @@ from qtpy.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 from rich import print
-from segment_anything import SamPredictor, sam_model_registry
+from segment_anything import SamAutomaticMaskGenerator, SamPredictor, sam_model_registry
 from skimage import measure
+from superqt.utils import create_worker, ensure_main_thread
 
 if TYPE_CHECKING:
     from segment_anything.modeling import Sam
@@ -48,10 +51,13 @@ class SamPromptWidget(QWidget):
 
         self._sam: Sam | None = None
         self._predictor: SamPredictor | None = None
+        self._mask_generator: SamAutomaticMaskGenerator | None = None
+
+        self._success = False
 
         # Add the model groupbox
-        _model_group = QGroupBox("SAM Model Checkpoint")
-        _model_group_layout = QGridLayout(_model_group)
+        self._model_group = QGroupBox("SAM Model Checkpoint")
+        _model_group_layout = QGridLayout(self._model_group)
         _model_group_layout.setSpacing(10)
         _model_group_layout.setContentsMargins(10, 10, 10, 10)
 
@@ -78,39 +84,142 @@ class SamPromptWidget(QWidget):
         _model_group_layout.addWidget(self._model_status_label, 2, 0, 1, 2)
         _model_group_layout.addWidget(self._load_modle_btn, 2, 2)
 
-        # add image groupbox
-        _image_group = QGroupBox("Layer Selector")
-        _image_group_layout = QGridLayout(_image_group)
+        # add layer selector groupbox
+        self._layer_group = QGroupBox("Layer Selector")
+        _image_group_layout = QGridLayout(self._layer_group)
         _image_combo_lbl = QLabel("Layer:")
         _image_combo_lbl.setSizePolicy(FIXED)
         self._image_combo = QComboBox()
-        self._add_points_layer_btn = QPushButton("Add Point Layers")
-        self._add_points_layer_btn.setSizePolicy(FIXED)
-        self._add_points_layer_btn.clicked.connect(self._add_points_layers)
         _image_group_layout.addWidget(_image_combo_lbl, 0, 0)
         _image_group_layout.addWidget(self._image_combo, 0, 1)
-        _image_group_layout.addWidget(self._add_points_layer_btn, 0, 2)
+
+        #  add automatic segmentation
+        self._automatic_seg_group = QGroupBox("SAM Automatic Mask Generator")
+        _automatic_group_layout = QGridLayout(self._automatic_seg_group)
+
+        _points_per_side_lbl = QLabel("Points per side:")
+        self._points_per_side = QSpinBox()
+        self._points_per_side.setValue(32)
+
+        _points_per_batch_lbl = QLabel("Points per batch:")
+        self._points_per_batch = QSpinBox()
+        self._points_per_batch.setValue(64)
+
+        _pred_iou_thresh_lbl = QLabel("Pred IOU Threshold:")
+        self._pred_iou_thresh = QDoubleSpinBox()
+        self._pred_iou_thresh.setValue(0.88)
+
+        _stability_score_thresh_lbl = QLabel("Stability Score Threshold:")
+        self._stability_score_thresh = QDoubleSpinBox()
+        self._stability_score_thresh.setValue(0.95)
+
+        _stability_score_offset_lbl = QLabel("Stability Score Offset:")
+        self._stability_score_offset = QDoubleSpinBox()
+        self._stability_score_offset.setValue(1.0)
+
+        _box_nms_thresh_lbl = QLabel("Box NMS Threshold:")
+        self._box_nms_thresh = QDoubleSpinBox()
+        self._box_nms_thresh.setValue(0.7)
+
+        _crop_n_layers_lbl = QLabel("Crop N Layers:")
+        self._crop_n_layers = QSpinBox()
+        self._crop_n_layers.setValue(0)
+
+        _crop_nms_thresh_lbl = QLabel("Crop NMS Threshold:")
+        self._crop_nms_thresh = QDoubleSpinBox()
+        self._crop_nms_thresh.setValue(0.7)
+
+        _crop_overlap_ratio_lbl = QLabel("Crop Overlap Ratio:")
+        self._crop_overlap_ratio = QDoubleSpinBox()
+        self._crop_overlap_ratio.setValue(512 / 1500)
+
+        _crop_n_points_downscale_factor_lbl = QLabel("Crop N Points Downscale Factor:")
+        self._crop_n_points_downscale_factor = QSpinBox()
+        self._crop_n_points_downscale_factor.setValue(1)
+
+        _min_mask_region_area_lbl = QLabel("Min Mask Region Area:")
+        self._min_mask_region_area = QSpinBox()
+        self._min_mask_region_area.setValue(0)
+
+        _output_mode_lbl = QLabel("Output Mode:")
+        self._output_mode = QLineEdit(text="binary_mask")
+
+        _min_area_lbl = QLabel("Minimum Area:")
+        self._min_area = QSpinBox()
+        self._min_area.setMaximum(1000000)
+        self._min_area.setValue(100)
+
+        _max_area_lbl = QLabel("Maximum Area:")
+        self._max_area = QSpinBox()
+        self._max_area.setMaximum(1000000)
+        self._max_area.setValue(10000)
+
+        self._generate_mask_btn = QPushButton("Generate Masks")
+        self._generate_mask_btn.clicked.connect(self._on_generate)
+
+        _automatic_group_layout.addWidget(_points_per_side_lbl, 0, 0)
+        _automatic_group_layout.addWidget(self._points_per_side, 0, 1)
+        _automatic_group_layout.addWidget(_points_per_batch_lbl, 1, 0)
+        _automatic_group_layout.addWidget(self._points_per_batch, 1, 1)
+        _automatic_group_layout.addWidget(_pred_iou_thresh_lbl, 2, 0)
+        _automatic_group_layout.addWidget(self._pred_iou_thresh, 2, 1)
+        _automatic_group_layout.addWidget(_stability_score_thresh_lbl, 3, 0)
+        _automatic_group_layout.addWidget(self._stability_score_thresh, 3, 1)
+        _automatic_group_layout.addWidget(_stability_score_offset_lbl, 4, 0)
+        _automatic_group_layout.addWidget(self._stability_score_offset, 4, 1)
+        _automatic_group_layout.addWidget(_box_nms_thresh_lbl, 5, 0)
+        _automatic_group_layout.addWidget(self._box_nms_thresh, 5, 1)
+        _automatic_group_layout.addWidget(_crop_n_layers_lbl, 6, 0)
+        _automatic_group_layout.addWidget(self._crop_n_layers, 6, 1)
+        _automatic_group_layout.addWidget(_crop_nms_thresh_lbl, 7, 0)
+        _automatic_group_layout.addWidget(self._crop_nms_thresh, 7, 1)
+        _automatic_group_layout.addWidget(_crop_overlap_ratio_lbl, 8, 0)
+        _automatic_group_layout.addWidget(self._crop_overlap_ratio, 8, 1)
+        _automatic_group_layout.addWidget(_crop_n_points_downscale_factor_lbl, 9, 0)
+        _automatic_group_layout.addWidget(self._crop_n_points_downscale_factor, 9, 1)
+        _automatic_group_layout.addWidget(_min_mask_region_area_lbl, 10, 0)
+        _automatic_group_layout.addWidget(self._min_mask_region_area, 10, 1)
+        _automatic_group_layout.addWidget(_output_mode_lbl, 11, 0)
+        _automatic_group_layout.addWidget(self._output_mode, 11, 1)
+        _automatic_group_layout.addWidget(_min_area_lbl, 12, 0)
+        _automatic_group_layout.addWidget(self._min_area, 12, 1)
+        _automatic_group_layout.addWidget(_max_area_lbl, 13, 0)
+        _automatic_group_layout.addWidget(self._max_area, 13, 1)
+        _automatic_group_layout.addWidget(self._generate_mask_btn, 14, 0, 1, 2)
 
         # add mask predictor
-        _predictor_group = QGroupBox("SAM Predictor")
-        _predictor_group_layout = QGridLayout(_predictor_group)
+        self._predictor_group = QGroupBox("SAM Predictor")
+        _predictor_group_layout = QGridLayout(self._predictor_group)
         self._standard_radio = QRadioButton("Standard Predictor")
         self._standard_radio.setChecked(True)
         self._standard_radio.setSizePolicy(FIXED)
         self._loop_radio = QRadioButton("Loop Single Points Predictor")
         self._loop_radio.setSizePolicy(FIXED)
-        self._generate_mask_btn = QPushButton("Predict")
-        self._generate_mask_btn.setSizePolicy(FIXED)
-        self._generate_mask_btn.clicked.connect(self._on_predict)
+        self._add_points_layer_btn = QPushButton("Add Point Layers")
+        self._add_points_layer_btn.setSizePolicy(FIXED)
+        self._add_points_layer_btn.clicked.connect(self._add_points_layers)
+        self._predict_btn = QPushButton("Predict")
+        self._predict_btn.clicked.connect(self._on_predict)
         _predictor_group_layout.addWidget(self._standard_radio, 0, 0)
         _predictor_group_layout.addWidget(self._loop_radio, 0, 1)
-        _predictor_group_layout.addWidget(self._generate_mask_btn, 0, 2)
+        _predictor_group_layout.addWidget(self._add_points_layer_btn, 0, 2)
+        _predictor_group_layout.addWidget(self._predict_btn, 1, 0, 1, 3)
+
+        # info group
+        _info_group = QGroupBox("Info")
+        _info_group_layout = QVBoxLayout(_info_group)
+        self._load_info_lbl = QLabel("Model not loaded.")
+        self._info_lbl = QLabel()
+        _info_group_layout.addWidget(self._load_info_lbl)
+        _info_group_layout.addWidget(self._info_lbl)
 
         # add the widget to the main layout
         main_layout = QVBoxLayout(self)
-        main_layout.addWidget(_model_group)
-        main_layout.addWidget(_image_group)
-        main_layout.addWidget(_predictor_group)
+        main_layout.addWidget(self._model_group)
+        main_layout.addWidget(self._layer_group)
+        main_layout.addWidget(self._automatic_seg_group)
+        main_layout.addWidget(self._predictor_group)
+        main_layout.addWidget(_info_group)
 
         # connections
         self._viewer.layers.events.changed.connect(self._on_layers_changed)
@@ -119,15 +228,12 @@ class SamPromptWidget(QWidget):
 
     def _enable(self, state: bool) -> None:
         """Enable or disable the widget."""
-        self._model_le.setEnabled(state)
-        self._model_browse_btn.setEnabled(state)
-        self._model_type_le.setEnabled(state)
-        self._load_modle_btn.setEnabled(state)
-        self._image_combo.setEnabled(state)
-        self._add_points_layer_btn.setEnabled(state)
-        self._standard_radio.setEnabled(state)
-        self._loop_radio.setEnabled(state)
-        self._generate_mask_btn.setEnabled(state)
+        self._model_group.setEnabled(state)
+        self._layer_group.setEnabled(state)
+        self._automatic_seg_group.setEnabled(state)
+        self._predictor_group.setEnabled(state)
+
+    # ========================MODEL=========================
 
     def _browse_model(self) -> None:
         """Open a file dialog to select the SAM Model Checkpoint."""
@@ -145,23 +251,55 @@ class SamPromptWidget(QWidget):
         model_checkpoint = self._model_le.text()
         model_type = self._model_type_le.text()
 
+        self._load_worker(model_checkpoint, model_type)
+
+    def _load_worker(self, model_checkpoint: str, model_type: str) -> None:
+        self._load_info_lbl.setText("Loading model...")
+        create_worker(
+            self._load,
+            model_checkpoint=model_checkpoint,
+            model_type=model_type,
+            _start_thread=True,
+            _connect={"yielded": self._update_info},
+        )
+
+    def _update_info(self, args: tuple[bool, str]) -> None:
+        """Update the info label."""
+        loaded, device = args
+        if loaded:
+            _loaded_status = f"Model loaded successfully.\nUsing: {device.upper()}"
+            self._model_status_label.setText("Model loaded successfully.")
+        else:
+            _loaded_status = "Error while loading model!"
+            self._model_status_label.setText("Model not loaded.")
+            self._sam = None
+            self._predictor = None
+
+        self._load_info_lbl.setText(_loaded_status)
+
+    def _load(
+        self, model_checkpoint: str, model_type: str
+    ) -> Generator[tuple[bool, str], None, None]:
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         try:
             self._sam = sam_model_registry[model_type](checkpoint=model_checkpoint)
         except Exception as e:
-            self._model_status_label.setText("Error while loading model!")
-            self._sam = None
-            self._predictor = None
+            yield False, ""
             print(e)
 
         self._sam.to(device=device)
 
-        self._model_status_label.setText(
-            f"Model successfully loaded!  Using device: {device.upper()}."
-        )
+        try:
+            self._predictor = SamPredictor(self._sam)
+        except Exception as e:
+            yield False, ""
+            print(e)
 
-        self._predictor = SamPredictor(self._sam)
+        yield True, device
+
+    # ========================LAYER=========================
 
     def _on_layers_changed(self) -> None:
         """Update the layer combo box."""
@@ -172,6 +310,137 @@ class SamPromptWidget(QWidget):
                 self._image_combo.addItem(layer.name)
         if current_layer and current_layer in self._viewer.layers:
             self._image_combo.setCurrentText(current_layer)
+
+    def _convert_image_to_8bit(self, layer_name: str) -> np.ndarray:
+        """Convert the image to 8-bit and stack to 3 channels."""
+        # TODO: Handle already 8-bit, rgb images + stacks
+        layer = cast(napari.layers.Image, self._viewer.layers[layer_name])
+        data = layer.data
+        # Normalize to the range 0-1
+        img_normalized = data / np.max(data)
+        # Scale to 8-bit (0-255)
+        img_8bit = (img_normalized * 255).astype(np.uint8)
+        # Stack the image three times to create a 3-channel image
+        img_8bit = np.stack((img_8bit, img_8bit, img_8bit), axis=-1)
+        return img_8bit
+
+    # ====================AUTO MASK GENERATOR====================
+
+    def _on_generate(self) -> None:
+        """Start the mask generation."""
+        self._info_lbl.setText("Generating masks...")
+
+        self._init_generator()
+
+        if self._mask_generator is None:
+            return
+
+        layer_name = self._image_combo.currentText()
+
+        if (
+            not self._viewer.layers
+            or not layer_name
+            or layer_name not in self._viewer.layers
+        ):
+            return
+
+        image = self._convert_image_to_8bit(layer_name)
+
+        self._generate_worker(image, layer_name)
+
+    def _generate_worker(self, image: np.ndarray, layer_name: str) -> None:
+        self._enable(False)
+        create_worker(
+            self._generate,
+            image=image,
+            layer_name=layer_name,
+            _start_thread=True,
+            _connect={
+                "yielded": self._display_labels_auto_segmentation,
+                "finished": self._on_auto_mask_generator_finished,
+            },
+        )
+
+    def _on_auto_mask_generator_finished(self) -> None:
+        """Enable the widget after the prediction is finished."""
+        self._enable(True)
+        if self._success:
+            self._info_lbl.setText("Automatic Mask Generator finished.")
+        else:
+            self._info_lbl.setText("Error while running the Automatic Mask Generator!")
+
+    def _init_generator(self) -> None:
+        """Initialize the SAM Automatic Mask Generator."""
+        self._mask_generator = None
+        try:
+            self._mask_generator = SamAutomaticMaskGenerator(
+                model=self._sam,
+                points_per_side=self._points_per_side.value(),
+                points_per_batch=self._points_per_batch.value(),
+                pred_iou_thresh=self._pred_iou_thresh.value(),
+                stability_score_thresh=self._stability_score_thresh.value(),
+                stability_score_offset=self._stability_score_offset.value(),
+                box_nms_thresh=self._box_nms_thresh.value(),
+                crop_n_layers=self._crop_n_layers.value(),
+                crop_nms_thresh=self._crop_nms_thresh.value(),
+                crop_overlap_ratio=self._crop_overlap_ratio.value(),
+                crop_n_points_downscale_factor=self._crop_n_points_downscale_factor.value(),
+                point_grids=None,
+                min_mask_region_area=self._min_mask_region_area.value(),
+                output_mode=self._output_mode.text(),
+            )
+            self._success = True
+        except Exception as e:
+            self._mask_generator = None
+            self._success = False
+            print(e)
+
+    def _generate(
+        self, image: np.ndarray, layer_name: str
+    ) -> Generator[tuple[list[dict[str, Any]], str], None, None]:
+        """Generate masks using the SAM Automatic Mask Generator."""
+        try:
+            masks = self._mask_generator.generate(image)
+            self._success = True
+        except Exception as e:
+            self._success = False
+            print(e)
+            yield [], layer_name
+            return
+        yield masks, layer_name
+
+    @ensure_main_thread
+    def _display_labels_auto_segmentation(
+        self, args: tuple[list[dict[str, Any]], str]
+    ) -> None:
+        """Display the masks in a stack."""
+        masks, layer_name = args
+
+        if console := getattr(self._viewer.window._qt_viewer, "console", None):
+            console.push({"masks": masks})
+
+        segmented: list[np.ndarray] = [
+            mask["segmentation"]
+            for mask in masks
+            if (
+                mask["area"] >= self._min_area.value()
+                and mask["area"] <= self._max_area.value()
+            )
+        ]
+        name = f"{layer_name}_masks[Automatic]"
+        # # create a stack
+        # stack = np.stack(segmented, axis=0)
+        # self._viewer.add_image(stack, name=name, blending="additive")
+
+        name = f"{layer_name}_labels[Automatic]"
+        final_mask = np.zeros_like(segmented[0], dtype=np.int32)
+        for mask in segmented:
+            labeled_mask = measure.label(mask)
+            labeled_mask[labeled_mask != 0] += final_mask.max()
+            final_mask += labeled_mask
+        self._viewer.add_labels(final_mask, name=name)
+
+    # ==========================PREDCITOR===========================
 
     def _add_points_layers(self) -> None:
         """Add the points layers to the viewer."""
@@ -208,6 +477,8 @@ class SamPromptWidget(QWidget):
         if self._predictor is None:
             return
 
+        self._info_lbl.setText("Running Predictor...")
+
         layer_name = self._image_combo.currentText()
 
         if (
@@ -235,7 +506,7 @@ class SamPromptWidget(QWidget):
         if not frg_points and not bkg_points:
             return
 
-        self._predict(layer_name, frg_points, bkg_points)
+        self._predict_worker(layer_name, frg_points, bkg_points)
 
     def _get_point_layers(
         self, layer_name: str
@@ -256,14 +527,41 @@ class SamPromptWidget(QWidget):
 
         return frg_point_layer, bkg_point_layer
 
-    def _predict(
+    def _predict_worker(
         self,
         layer_name: str,
         foreground_points: list[tuple[tuple[int, int], int]],
         background_points: list[tuple[tuple[int, int], int]],
     ) -> None:
-        """Run the SamPredictor."""
+        """Run the prediction in another thread."""
         self._enable(False)
+        create_worker(
+            self._predict,
+            layer_name=layer_name,
+            foreground_points=foreground_points,
+            background_points=background_points,
+            _start_thread=True,
+            _connect={
+                "yielded": self._display_labels_predictor,
+                "finished": self._on_predict_finished,
+            },
+        )
+
+    def _on_predict_finished(self) -> None:
+        """Enable the widget after the prediction is finished."""
+        self._enable(True)
+        if self._success:
+            self._info_lbl.setText("Predictor finished.")
+        else:
+            self._info_lbl.setText("Error while running the Predictor!")
+
+    def _predict(
+        self,
+        layer_name: str,
+        foreground_points: list[tuple[tuple[int, int], int]],
+        background_points: list[tuple[tuple[int, int], int]],
+    ) -> Generator[tuple[str, list[np.ndarray], list[float], bool], None, None]:
+        """Run the SamPredictor."""
         try:
             image = self._convert_image_to_8bit(layer_name)
             self._predictor.set_image(image)
@@ -275,14 +573,12 @@ class SamPromptWidget(QWidget):
             else:
                 masks, scores = self._loop_predictor(foreground_points)
 
-            if console := getattr(self._viewer.window._qt_viewer, "console", None):
-                console.push({"masks": masks, "scores": scores})
+            self._success = True
 
-            self._display_labels(layer_name, masks, self._standard_radio.isChecked())
+            yield layer_name, masks, scores, self._standard_radio.isChecked()
         except Exception as e:
+            self._success = False
             print(e)
-        finally:
-            self._enable(True)
 
     def _standard_predictor(
         self,
@@ -294,23 +590,30 @@ class SamPromptWidget(QWidget):
         Feed foreground and background points to the predictor in a list and get the
         masks and scores.
         """
-        input_point = []
-        input_label = []
-        for point, label in foreground_points:
-            input_point.append(point)
-            input_label.append(label)
-        for bg_points, bg_label in background_points:
-            input_point.append(bg_points)
-            input_label.append(bg_label)
+        try:
+            input_point = []
+            input_label = []
+            for point, label in foreground_points:
+                input_point.append(point)
+                input_label.append(label)
+            for bg_points, bg_label in background_points:
+                input_point.append(bg_points)
+                input_label.append(bg_label)
 
-        input_point = np.array(input_point)
-        input_label = np.array(input_label)
+            input_point = np.array(input_point)
+            input_label = np.array(input_label)
 
-        masks, score, _ = self._predictor.predict(
-            point_coords=input_point,
-            point_labels=input_label,
-            multimask_output=False,
-        )
+            masks, score, _ = self._predictor.predict(
+                point_coords=input_point,
+                point_labels=input_label,
+                multimask_output=False,
+            )
+            self._success = True
+        except Exception as e:
+            self._success = False
+            print(e)
+            masks = []
+            score = []
 
         return masks, score
 
@@ -322,40 +625,42 @@ class SamPromptWidget(QWidget):
         Feed each foreground point to the predictor individually and get the masks and
         scores for each point.
         """
-        masks: list[np.ndarray] = []
-        scores: list[float] = []
-        for point, label in foreground_points:
-            input_point = np.array([point])
-            input_label = np.array([label])
+        try:
+            masks: list[np.ndarray] = []
+            scores: list[float] = []
+            for point, label in foreground_points:
+                input_point = np.array([point])
+                input_label = np.array([label])
 
-            mask, score, _ = self._predictor.predict(
-                point_coords=input_point,
-                point_labels=input_label,
-                multimask_output=False,
-            )
-            masks.append(mask)
-            scores.append(score)
+                mask, score, _ = self._predictor.predict(
+                    point_coords=input_point,
+                    point_labels=input_label,
+                    multimask_output=False,
+                )
+                masks.append(mask)
+                scores.append(score)
+            self._success = True
+        except Exception as e:
+            self._success = False
+            print(e)
+            masks = []
+            scores = []
+
         return masks, scores
 
-    def _convert_image_to_8bit(self, layer_name: str) -> np.ndarray:
-        """Convert the image to 8-bit and stack to 3 channels."""
-        # TODO: Handle already 8-bit, rgb images + stacks
-        layer = cast(napari.layers.Image, self._viewer.layers[layer_name])
-        data = layer.data
-        # Normalize to the range 0-1
-        img_normalized = data / np.max(data)
-        # Scale to 8-bit (0-255)
-        img_8bit = (img_normalized * 255).astype(np.uint8)
-        # Stack the image three times to create a 3-channel image
-        img_8bit = np.stack((img_8bit, img_8bit, img_8bit), axis=-1)
-        return img_8bit
-
-    def _display_labels(
-        self, layer_name: str, masks: list[np.ndarray], standard: bool
+    @ensure_main_thread
+    def _display_labels_predictor(
+        self, args: tuple[str, list[np.ndarray], list[float], bool]
     ) -> None:
         """Display the masks as labels in the viewer."""
+        layer_name, masks, scores, standard = args
+
+        if console := getattr(self._viewer.window._qt_viewer, "console", None):
+            console.push({"masks": masks, "scores": scores})
+
         _type = "Standard" if standard else "Loop"
-        name = f"{layer_name}_mask[{_type}]"
+        name = f"{layer_name}_labels[{_type}]"
+
         if len(masks) == 1:
             labeled_mask = measure.label(masks[0])
             self._viewer.add_labels(labeled_mask, name=name)
