@@ -78,8 +78,7 @@ class SamPromptWidget(QWidget):
         self._model_browse_btn = QPushButton("Browse")
         self._model_browse_btn.setSizePolicy(FIXED)
         self._model_browse_btn.clicked.connect(self._browse_model)
-        self._model_status_label = QLabel("Model not loaded.")
-        self._load_module_btn = QPushButton("Load")
+        self._load_module_btn = QPushButton("Load Selected Model")
         self._load_module_btn.clicked.connect(self._on_load)
 
         _model_group_layout.addWidget(_model_lbl, 0, 0)
@@ -87,8 +86,7 @@ class SamPromptWidget(QWidget):
         _model_group_layout.addWidget(self._model_browse_btn, 0, 2)
         _model_group_layout.addWidget(_model_type_lbl, 1, 0)
         _model_group_layout.addWidget(self._model_type_le, 1, 1, 1, 2)
-        _model_group_layout.addWidget(self._model_status_label, 2, 0, 1, 2)
-        _model_group_layout.addWidget(self._load_module_btn, 2, 2)
+        _model_group_layout.addWidget(self._load_module_btn, 2, 0, 1, 3)
 
         # add layer selector groupbox
         self._layer_group = QGroupBox("Layer Selector")
@@ -140,12 +138,43 @@ class SamPromptWidget(QWidget):
         self._viewer.layers.events.inserted.connect(self._on_layers_changed)
         self._viewer.layers.events.removed.connect(self._on_layers_changed)
 
-    def _enable(self, state: bool) -> None:
+        self._enable_widgets(False)
+
+    def _enable_widgets(self, state: bool) -> None:
+        """Enable or disable the widget."""
+        self._layer_group.setEnabled(state)
+        self._automatic_seg_group.setEnabled(state)
+        self._predictor_group.setEnabled(state)
+
+    def _enable_all(self, state: bool) -> None:
         """Enable or disable the widget."""
         self._model_group.setEnabled(state)
         self._layer_group.setEnabled(state)
         self._automatic_seg_group.setEnabled(state)
         self._predictor_group.setEnabled(state)
+
+    def _on_layers_changed(self) -> None:
+        """Update the layer combo box."""
+        current_layer = self._image_combo.currentText()
+        self._image_combo.clear()
+        for layer in self._viewer.layers:
+            if isinstance(layer, napari.layers.Image):
+                self._image_combo.addItem(layer.name)
+        if current_layer and current_layer in self._viewer.layers:
+            self._image_combo.setCurrentText(current_layer)
+
+    def _convert_image_to_8bit(self, layer_name: str) -> np.ndarray:
+        """Convert the image to 8-bit and stack to 3 channels."""
+        # TODO: Handle already 8-bit, rgb images + stacks
+        layer = cast(napari.layers.Image, self._viewer.layers[layer_name])
+        data = layer.data
+        # Normalize to the range 0-1
+        img_normalized = data / np.max(data)
+        # Scale to 8-bit (0-255)
+        img_8bit = (img_normalized * 255).astype(np.uint8)
+        # Stack the image three times to create a 3-channel image
+        img_8bit = np.stack((img_8bit, img_8bit, img_8bit), axis=-1)
+        return img_8bit
 
     # ========================MODEL=========================
 
@@ -171,6 +200,7 @@ class SamPromptWidget(QWidget):
         self._load_worker(model_checkpoint, model_type)
 
     def _load_worker(self, model_checkpoint: str, model_type: str) -> None:
+        self._info_lbl.setText("")
         create_worker(
             self._load,
             model_checkpoint=model_checkpoint,
@@ -183,12 +213,12 @@ class SamPromptWidget(QWidget):
         """Update the info label."""
         loaded, device = args
         if loaded:
+            self._enable_widgets(True)
             _loaded_status = f"Model loaded successfully.\nUsing: {device.upper()}"
-            self._model_status_label.setText("Model loaded successfully.")
             logging.info("Model loaded successfully.")
         else:
+            self._enable_widgets(False)
             _loaded_status = "Error while loading model!"
-            self._model_status_label.setText("Model not loaded.")
             self._sam = None
             self._predictor = None
             logging.error("Error while loading model!")
@@ -223,41 +253,12 @@ class SamPromptWidget(QWidget):
 
         yield True, device
 
-    # ========================LAYER=========================
-
-    def _on_layers_changed(self) -> None:
-        """Update the layer combo box."""
-        current_layer = self._image_combo.currentText()
-        self._image_combo.clear()
-        for layer in self._viewer.layers:
-            if isinstance(layer, napari.layers.Image):
-                self._image_combo.addItem(layer.name)
-        if current_layer and current_layer in self._viewer.layers:
-            self._image_combo.setCurrentText(current_layer)
-
-    def _convert_image_to_8bit(self, layer_name: str) -> np.ndarray:
-        """Convert the image to 8-bit and stack to 3 channels."""
-        # TODO: Handle already 8-bit, rgb images + stacks
-        layer = cast(napari.layers.Image, self._viewer.layers[layer_name])
-        data = layer.data
-        # Normalize to the range 0-1
-        img_normalized = data / np.max(data)
-        # Scale to 8-bit (0-255)
-        img_8bit = (img_normalized * 255).astype(np.uint8)
-        # Stack the image three times to create a 3-channel image
-        img_8bit = np.stack((img_8bit, img_8bit, img_8bit), axis=-1)
-        return img_8bit
-
     # ====================AUTO MASK GENERATOR====================
 
     def _on_generate(self) -> None:
         """Start the mask generation."""
-        self._info_lbl.setText("Generating masks...")
-        logging.info("Generating masks...")
-
-        self._init_generator()
-
-        if self._mask_generator is None:
+        if self._sam is None:
+            self._info_lbl.setText("Load a SAM model first.")
             return
 
         layer_name = self._image_combo.currentText()
@@ -267,14 +268,48 @@ class SamPromptWidget(QWidget):
             or not layer_name
             or layer_name not in self._viewer.layers
         ):
+            self._info_lbl.setText("No image layer selected.")
             return
+
+        self._info_lbl.setText("Generating masks...")
+        logging.info("Generating masks...")
+
+        try:
+            self._init_generator()
+        except Exception as e:
+            self._mask_generator = None
+            self._info_lbl.setText(
+                "Error while initializing the Automatic Mask Generator!"
+            )
+            logging.exception(e)
 
         image = self._convert_image_to_8bit(layer_name)
 
         self._generate_worker(image, layer_name)
 
+    def _init_generator(self) -> None:
+        """Initialize the SAM Automatic Mask Generator."""
+        self._mask_generator = None
+        options = self._automatic_seg_group
+        self._mask_generator = SamAutomaticMaskGenerator(
+            model=self._sam,
+            points_per_side=options._points_per_side.value(),
+            points_per_batch=options._points_per_batch.value(),
+            pred_iou_thresh=options._pred_iou_thresh.value(),
+            stability_score_thresh=options._stability_score_thresh.value(),
+            stability_score_offset=options._stability_score_offset.value(),
+            box_nms_thresh=options._box_nms_thresh.value(),
+            crop_n_layers=options._crop_n_layers.value(),
+            crop_nms_thresh=options._crop_nms_thresh.value(),
+            crop_overlap_ratio=options._crop_overlap_ratio.value(),
+            crop_n_points_downscale_factor=options._crop_n_points_downscale_factor.value(),
+            point_grids=None,
+            min_mask_region_area=options._min_mask_region_area.value(),
+            output_mode=options._output_mode.text(),
+        )
+
     def _generate_worker(self, image: np.ndarray, layer_name: str) -> None:
-        self._enable(False)
+        self._enable_all(False)
         create_worker(
             self._generate,
             image=image,
@@ -285,43 +320,6 @@ class SamPromptWidget(QWidget):
                 "finished": self._on_auto_mask_generator_finished,
             },
         )
-
-    def _on_auto_mask_generator_finished(self) -> None:
-        """Enable the widget after the prediction is finished."""
-        self._enable(True)
-        if self._success:
-            self._info_lbl.setText("Automatic Mask Generator finished.")
-            logging.info("Automatic Mask Generator finished.")
-        else:
-            self._info_lbl.setText("Error while running the Automatic Mask Generator!")
-            logging.error("Error while running the Automatic Mask Generator!")
-
-    def _init_generator(self) -> None:
-        """Initialize the SAM Automatic Mask Generator."""
-        self._mask_generator = None
-        options = self._automatic_seg_group
-        try:
-            self._mask_generator = SamAutomaticMaskGenerator(
-                model=self._sam,
-                points_per_side=options._points_per_side.value(),
-                points_per_batch=options._points_per_batch.value(),
-                pred_iou_thresh=options._pred_iou_thresh.value(),
-                stability_score_thresh=options._stability_score_thresh.value(),
-                stability_score_offset=options._stability_score_offset.value(),
-                box_nms_thresh=options._box_nms_thresh.value(),
-                crop_n_layers=options._crop_n_layers.value(),
-                crop_nms_thresh=options._crop_nms_thresh.value(),
-                crop_overlap_ratio=options._crop_overlap_ratio.value(),
-                crop_n_points_downscale_factor=options._crop_n_points_downscale_factor.value(),
-                point_grids=None,
-                min_mask_region_area=options._min_mask_region_area.value(),
-                output_mode=options._output_mode.text(),
-            )
-            self._success = True
-        except Exception as e:
-            self._mask_generator = None
-            self._success = False
-            logging.exception(e)
 
     def _generate(
         self, image: np.ndarray, layer_name: str
@@ -337,6 +335,16 @@ class SamPromptWidget(QWidget):
             yield [], layer_name
             return
         yield masks, layer_name
+
+    def _on_auto_mask_generator_finished(self) -> None:
+        """Enable the widget after the prediction is finished."""
+        self._enable_all(True)
+        if self._success:
+            self._info_lbl.setText("Automatic Mask Generator finished.")
+            logging.info("Automatic Mask Generator finished.")
+        else:
+            self._info_lbl.setText("Error while running the Automatic Mask Generator!")
+            logging.error("Error while running the Automatic Mask Generator!")
 
     @ensure_main_thread  # type: ignore [misc]
     def _display_labels_auto_segmentation(
@@ -390,7 +398,7 @@ class SamPromptWidget(QWidget):
                 metadata={"id": layer, "type": 0},
                 edge_color="magenta",
                 face_color="magenta",
-            )
+            ).mode = "add"
 
         if (layer, 1) not in layers_meta:
             self._viewer.add_points(
@@ -399,15 +407,13 @@ class SamPromptWidget(QWidget):
                 metadata={"id": layer, "type": 1},
                 edge_color="green",
                 face_color="green",
-            )
+            ).mode = "add"
 
     def _on_predict(self) -> None:
         """Start the prediction."""
-        if self._predictor is None:
+        if self._sam is None or self._predictor is None:
+            self._info_lbl.setText("Load a SAM model first.")
             return
-
-        self._info_lbl.setText("Running Predictor...")
-        logging.info("Running Predictor...")
 
         layer_name = self._image_combo.currentText()
 
@@ -416,11 +422,16 @@ class SamPromptWidget(QWidget):
             or not layer_name
             or layer_name not in self._viewer.layers
         ):
+            self._info_lbl.setText("No image layer selected.")
             return
+
+        self._info_lbl.setText("Running Predictor...")
+        logging.info("Running Predictor...")
 
         frg_point_layer, bkg_point_layer = self._get_point_layers(layer_name)
 
         if frg_point_layer is None or bkg_point_layer is None:
+            logging.error("No Foreground or Background points.")
             return
 
         frg_points: list[tuple[tuple[int, int], int]] = []
@@ -464,7 +475,7 @@ class SamPromptWidget(QWidget):
         background_points: list[tuple[tuple[int, int], int]],
     ) -> None:
         """Run the prediction in another thread."""
-        self._enable(False)
+        self._enable_all(False)
         create_worker(
             self._predict,
             layer_name=layer_name,
@@ -476,16 +487,6 @@ class SamPromptWidget(QWidget):
                 "finished": self._on_predict_finished,
             },
         )
-
-    def _on_predict_finished(self) -> None:
-        """Enable the widget after the prediction is finished."""
-        self._enable(True)
-        if self._success:
-            self._info_lbl.setText("Predictor finished.")
-            logging.info("Predictor finished.")
-        else:
-            self._info_lbl.setText("Error while running the Predictor!")
-            logging.error("Error while running the Predictor!")
 
     def _predict(
         self,
@@ -540,9 +541,8 @@ class SamPromptWidget(QWidget):
             self._success = True
         except Exception as e:
             self._success = False
+            masks, score = [], []
             logging.exception(e)
-            masks = []
-            score = []
 
         return masks, score
 
@@ -572,11 +572,20 @@ class SamPromptWidget(QWidget):
             self._success = True
         except Exception as e:
             self._success = False
+            masks, score = [], []
             logging.exception(e)
-            masks = []
-            scores = []
 
         return masks, scores
+
+    def _on_predict_finished(self) -> None:
+        """Enable the widget after the prediction is finished."""
+        self._enable_all(True)
+        if self._success:
+            self._info_lbl.setText("Predictor finished.")
+            logging.info("Predictor finished.")
+        else:
+            self._info_lbl.setText("Error while running the Predictor!")
+            logging.error("Error while running the Predictor!")
 
     @ensure_main_thread  # type: ignore [misc]
     def _display_labels_predictor(
