@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Generator, cast
 
 import napari.layers
@@ -21,7 +22,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from rich import print
 from segment_anything import SamAutomaticMaskGenerator, SamPredictor, sam_model_registry
 from skimage import measure
 from superqt.utils import create_worker, ensure_main_thread
@@ -32,6 +32,12 @@ if TYPE_CHECKING:
 
 FIXED = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 EXTENDED = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+logging.basicConfig(
+    # filename="napari_sam_prompt.log", # uncomment to log to a file in this directory
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
 
 class SamPromptWidget(QWidget):
@@ -251,10 +257,12 @@ class SamPromptWidget(QWidget):
         model_checkpoint = self._model_le.text()
         model_type = self._model_type_le.text()
 
+        self._load_info_lbl.setText("Loading model...")
+        logging.info("Loading model...")
+
         self._load_worker(model_checkpoint, model_type)
 
     def _load_worker(self, model_checkpoint: str, model_type: str) -> None:
-        self._load_info_lbl.setText("Loading model...")
         create_worker(
             self._load,
             model_checkpoint=model_checkpoint,
@@ -269,11 +277,13 @@ class SamPromptWidget(QWidget):
         if loaded:
             _loaded_status = f"Model loaded successfully.\nUsing: {device.upper()}"
             self._model_status_label.setText("Model loaded successfully.")
+            logging.info("Model loaded successfully.")
         else:
             _loaded_status = "Error while loading model!"
             self._model_status_label.setText("Model not loaded.")
             self._sam = None
             self._predictor = None
+            logging.error("Error while loading model!")
 
         self._load_info_lbl.setText(_loaded_status)
 
@@ -290,7 +300,7 @@ class SamPromptWidget(QWidget):
         except Exception as e:
             self._sam = None
             yield False, ""
-            print(e)
+            logging.exception(e)
             return
 
         self._sam.to(device=device)
@@ -300,7 +310,7 @@ class SamPromptWidget(QWidget):
         except Exception as e:
             self._predictor = None
             yield False, ""
-            print(e)
+            logging.exception(e)
             return
 
         yield True, device
@@ -335,6 +345,7 @@ class SamPromptWidget(QWidget):
     def _on_generate(self) -> None:
         """Start the mask generation."""
         self._info_lbl.setText("Generating masks...")
+        logging.info("Generating masks...")
 
         self._init_generator()
 
@@ -372,8 +383,10 @@ class SamPromptWidget(QWidget):
         self._enable(True)
         if self._success:
             self._info_lbl.setText("Automatic Mask Generator finished.")
+            logging.info("Automatic Mask Generator finished.")
         else:
             self._info_lbl.setText("Error while running the Automatic Mask Generator!")
+            logging.error("Error while running the Automatic Mask Generator!")
 
     def _init_generator(self) -> None:
         """Initialize the SAM Automatic Mask Generator."""
@@ -399,7 +412,7 @@ class SamPromptWidget(QWidget):
         except Exception as e:
             self._mask_generator = None
             self._success = False
-            print(e)
+            logging.exception(e)
 
     def _generate(
         self, image: np.ndarray, layer_name: str
@@ -411,7 +424,7 @@ class SamPromptWidget(QWidget):
             self._success = True
         except Exception as e:
             self._success = False
-            print(e)
+            logging.exception(e)
             yield [], layer_name
             return
         yield masks, layer_name
@@ -485,6 +498,7 @@ class SamPromptWidget(QWidget):
             return
 
         self._info_lbl.setText("Running Predictor...")
+        logging.info("Running Predictor...")
 
         layer_name = self._image_combo.currentText()
 
@@ -559,8 +573,10 @@ class SamPromptWidget(QWidget):
         self._enable(True)
         if self._success:
             self._info_lbl.setText("Predictor finished.")
+            logging.info("Predictor finished.")
         else:
             self._info_lbl.setText("Error while running the Predictor!")
+            logging.error("Error while running the Predictor!")
 
     def _predict(
         self,
@@ -586,7 +602,7 @@ class SamPromptWidget(QWidget):
             yield layer_name, masks, scores, self._standard_radio.isChecked()
         except Exception as e:
             self._success = False
-            print(e)
+            logging.exception(e)
 
     def _standard_predictor(
         self,
@@ -600,27 +616,22 @@ class SamPromptWidget(QWidget):
         """
         try:
             self._predictor = cast(SamPredictor, self._predictor)
-            input_point = []
-            input_label = []
-            for point, label in foreground_points:
-                input_point.append(point)
-                input_label.append(label)
-            for bg_points, bg_label in background_points:
-                input_point.append(bg_points)
-                input_label.append(bg_label)
-
-            input_point = np.array(input_point)
-            input_label = np.array(input_label)
+            input_point = [point for point, _ in foreground_points] + [
+                bg_points for bg_points, _ in background_points
+            ]
+            input_label = [label for _, label in foreground_points] + [
+                bg_label for _, bg_label in background_points
+            ]
 
             masks, score, _ = self._predictor.predict(
-                point_coords=input_point,
-                point_labels=input_label,
+                point_coords=np.array(input_point),
+                point_labels=np.array(input_label),
                 multimask_output=False,
             )
             self._success = True
         except Exception as e:
             self._success = False
-            print(e)
+            logging.exception(e)
             masks = []
             score = []
 
@@ -652,7 +663,7 @@ class SamPromptWidget(QWidget):
             self._success = True
         except Exception as e:
             self._success = False
-            print(e)
+            logging.exception(e)
             masks = []
             scores = []
 
