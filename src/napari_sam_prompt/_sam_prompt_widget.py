@@ -29,8 +29,6 @@ from superqt.utils import create_worker, ensure_main_thread
 if TYPE_CHECKING:
     from segment_anything.modeling import Sam
 
-mc = "/Users/fdrgsp/Documents/git/sam_vit_h_4b8939.pth"
-mtype = "vit_h"
 
 FIXED = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 EXTENDED = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
