@@ -75,8 +75,8 @@ class SamPromptWidget(QWidget):
         self._model_browse_btn.setSizePolicy(FIXED)
         self._model_browse_btn.clicked.connect(self._browse_model)
         self._model_status_label = QLabel("Model not loaded.")
-        self._load_modle_btn = QPushButton("Load")
-        self._load_modle_btn.clicked.connect(self._on_load)
+        self._load_module_btn = QPushButton("Load")
+        self._load_module_btn.clicked.connect(self._on_load)
 
         _model_group_layout.addWidget(_model_lbl, 0, 0)
         _model_group_layout.addWidget(self._model_le, 0, 1)
@@ -84,7 +84,7 @@ class SamPromptWidget(QWidget):
         _model_group_layout.addWidget(_model_type_lbl, 1, 0)
         _model_group_layout.addWidget(self._model_type_le, 1, 1, 1, 2)
         _model_group_layout.addWidget(self._model_status_label, 2, 0, 1, 2)
-        _model_group_layout.addWidget(self._load_modle_btn, 2, 2)
+        _model_group_layout.addWidget(self._load_module_btn, 2, 2)
 
         # add layer selector groupbox
         self._layer_group = QGroupBox("Layer Selector")
@@ -285,7 +285,6 @@ class SamPromptWidget(QWidget):
     def _load(
         self, model_checkpoint: str, model_type: str
     ) -> Generator[tuple[bool, str], None, None]:
-
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         try:
@@ -294,6 +293,7 @@ class SamPromptWidget(QWidget):
             self._sam = None
             yield False, ""
             print(e)
+            return
 
         self._sam.to(device=device)
 
@@ -303,6 +303,7 @@ class SamPromptWidget(QWidget):
             self._predictor = None
             yield False, ""
             print(e)
+            return
 
         yield True, device
 
@@ -407,6 +408,7 @@ class SamPromptWidget(QWidget):
     ) -> Generator[tuple[list[dict[str, Any]], str], None, None]:
         """Generate masks using the SAM Automatic Mask Generator."""
         try:
+            self._mask_generator = cast(SamAutomaticMaskGenerator, self._mask_generator)
             masks = self._mask_generator.generate(image)
             self._success = True
         except Exception as e:
@@ -416,7 +418,7 @@ class SamPromptWidget(QWidget):
             return
         yield masks, layer_name
 
-    @ensure_main_thread
+    @ensure_main_thread  # type: ignore [misc]
     def _display_labels_auto_segmentation(
         self, args: tuple[list[dict[str, Any]], str]
     ) -> None:
@@ -517,7 +519,7 @@ class SamPromptWidget(QWidget):
 
     def _get_point_layers(
         self, layer_name: str
-    ) -> tuple[napari.layers.Points | None, napari.layers.Points, None]:
+    ) -> tuple[napari.layers.Points | None, napari.layers.Points | None]:
         """Get the layer from the viewer."""
         frg_point_layer = None
         bkg_point_layer = None
@@ -571,6 +573,7 @@ class SamPromptWidget(QWidget):
         """Run the SamPredictor."""
         try:
             image = self._convert_image_to_8bit(layer_name)
+            self._predictor = cast(SamPredictor, self._predictor)
             self._predictor.set_image(image)
 
             if self._standard_radio.isChecked():
@@ -598,6 +601,7 @@ class SamPromptWidget(QWidget):
         masks and scores.
         """
         try:
+            self._predictor = cast(SamPredictor, self._predictor)
             input_point = []
             input_label = []
             for point, label in foreground_points:
@@ -633,6 +637,7 @@ class SamPromptWidget(QWidget):
         scores for each point.
         """
         try:
+            self._predictor = cast(SamPredictor, self._predictor)
             masks: list[np.ndarray] = []
             scores: list[float] = []
             for point, label in foreground_points:
@@ -655,7 +660,7 @@ class SamPromptWidget(QWidget):
 
         return masks, scores
 
-    @ensure_main_thread
+    @ensure_main_thread  # type: ignore [misc]
     def _display_labels_predictor(
         self, args: tuple[str, list[np.ndarray], list[float], bool]
     ) -> None:
