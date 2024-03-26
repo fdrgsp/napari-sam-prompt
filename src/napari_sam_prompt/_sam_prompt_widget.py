@@ -101,21 +101,36 @@ class SamPromptWidget(QWidget):
         self._automatic_seg_group = AutoMaskGeneratorWidget()
         self._automatic_seg_group.generateSignal.connect(self._on_generate)
 
-        # add mask predictor
-        self._predictor_group = QGroupBox("SAM Predictor")
-        _predictor_group_layout = QGridLayout(self._predictor_group)
-        self._standard_radio = QRadioButton("Standard Predictor")
-        self._standard_radio.setChecked(True)
-        self._loop_radio = QRadioButton("Loop Single Points Predictor")
-        self._add_points_layer_btn = QPushButton("Add Point Layers")
+        # add points predictor group
+        self._points_predictor_group = QGroupBox("SAM Predictor - Points")
+        _points_predictor_group_layout = QGridLayout(self._points_predictor_group)
+        self._points_standard_radio = QRadioButton("Standard Predictor")
+        self._points_standard_radio.setChecked(True)
+        self._points_loop_radio = QRadioButton("Loop Single Points Predictor")
+        self._add_points_layer_btn = QPushButton("Add Points Layers")
         self._add_points_layer_btn.setSizePolicy(FIXED)
         self._add_points_layer_btn.clicked.connect(self._add_points_layers)
-        self._predict_btn = QPushButton("Predict")
-        self._predict_btn.clicked.connect(self._on_predict)
-        _predictor_group_layout.addWidget(self._standard_radio, 0, 0)
-        _predictor_group_layout.addWidget(self._loop_radio, 0, 1)
-        _predictor_group_layout.addWidget(self._add_points_layer_btn, 0, 2)
-        _predictor_group_layout.addWidget(self._predict_btn, 1, 0, 1, 3)
+        self._points_predict_btn = QPushButton("Predict with Points Prompt")
+        self._points_predict_btn.clicked.connect(self._on_predict)
+        _points_predictor_group_layout.addWidget(self._points_standard_radio, 0, 0)
+        _points_predictor_group_layout.addWidget(self._points_loop_radio, 0, 1)
+        _points_predictor_group_layout.addWidget(self._add_points_layer_btn, 0, 2)
+        _points_predictor_group_layout.addWidget(self._points_predict_btn, 1, 0, 1, 3)
+
+        # add box predictor group
+        self._box_predictor_group = QGroupBox("SAM Predictor - Boxes")
+        _box_predictor_group_layout = QGridLayout(self._box_predictor_group)
+        self._boxes_standard_radio = QRadioButton("Standard Predictor")
+        self._boxes_standard_radio.setChecked(True)
+        self._boxes_loop_radio = QRadioButton("Loop Single Boxes Predictor")
+        self._add_shapes_layer_btn = QPushButton("Add Shapes Layers")
+        self._add_shapes_layer_btn.setSizePolicy(FIXED)
+        self._boxes_predict_btn = QPushButton("Predict with Boxes Prompt")
+        # self._boxes_predict_btn.clicked.connect(self._on_predict)
+        _box_predictor_group_layout.addWidget(self._boxes_standard_radio, 0, 0)
+        _box_predictor_group_layout.addWidget(self._boxes_loop_radio, 0, 1)
+        _box_predictor_group_layout.addWidget(self._add_shapes_layer_btn, 0, 2)
+        _box_predictor_group_layout.addWidget(self._boxes_predict_btn, 1, 0, 1, 3)
 
         # info group
         _info_group = QGroupBox("Info")
@@ -130,7 +145,8 @@ class SamPromptWidget(QWidget):
         main_layout.addWidget(self._model_group)
         main_layout.addWidget(self._layer_group)
         main_layout.addWidget(self._automatic_seg_group)
-        main_layout.addWidget(self._predictor_group)
+        main_layout.addWidget(self._points_predictor_group)
+        main_layout.addWidget(self._box_predictor_group)
         main_layout.addWidget(_info_group)
 
         # connections
@@ -144,14 +160,13 @@ class SamPromptWidget(QWidget):
         """Enable or disable the widget."""
         self._layer_group.setEnabled(state)
         self._automatic_seg_group.setEnabled(state)
-        self._predictor_group.setEnabled(state)
+        self._points_predictor_group.setEnabled(state)
+        self._box_predictor_group.setEnabled(state)
 
     def _enable_all(self, state: bool) -> None:
         """Enable or disable the widget."""
         self._model_group.setEnabled(state)
-        self._layer_group.setEnabled(state)
-        self._automatic_seg_group.setEnabled(state)
-        self._predictor_group.setEnabled(state)
+        self._enable_widgets(state)
 
     def _on_layers_changed(self) -> None:
         """Update the layer combo box."""
@@ -500,7 +515,7 @@ class SamPromptWidget(QWidget):
             self._predictor = cast(SamPredictor, self._predictor)
             self._predictor.set_image(image)
 
-            if self._standard_radio.isChecked():
+            if self._points_standard_radio.isChecked():
                 masks, scores = self._standard_predictor(
                     foreground_points, background_points
                 )
@@ -509,7 +524,7 @@ class SamPromptWidget(QWidget):
 
             self._success = True
 
-            yield layer_name, masks, scores, self._standard_radio.isChecked()
+            yield layer_name, masks, scores, self._points_standard_radio.isChecked()
         except Exception as e:
             self._success = False
             logging.exception(e)
