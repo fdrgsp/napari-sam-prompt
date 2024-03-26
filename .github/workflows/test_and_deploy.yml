@@ -5,13 +5,13 @@ on:
     branches: [main]
     tags: [v*]
   pull_request:
-  schedule:
-    - cron: "0 16 * * 1" # monday at noon est
 
 jobs:
   test:
     name: py${{ matrix.python-version }} ${{ matrix.backend }} ${{ matrix.platform }}
     runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
       matrix:
         platform: [windows-latest, macos-latest]
         python-version: ["3.9", "3.10", "3.11"]
