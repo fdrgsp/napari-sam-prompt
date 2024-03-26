@@ -15,7 +15,6 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QRadioButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -25,11 +24,15 @@ from skimage import measure
 from superqt.utils import create_worker, ensure_main_thread
 
 from napari_sam_prompt._sub_widgets._auto_mask_generator import AutoMaskGeneratorWidget
+from napari_sam_prompt._sub_widgets._predictor_widget import PredictorWidget
 
 if TYPE_CHECKING:
     from segment_anything.modeling import Sam
 
-
+POINTS = "points"
+BOXES = "boxes"
+STANDARD = "standard"
+LOOP = "loop"
 FIXED = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 EXTENDED = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -101,36 +104,10 @@ class SamPromptWidget(QWidget):
         self._automatic_seg_group = AutoMaskGeneratorWidget()
         self._automatic_seg_group.generateSignal.connect(self._on_generate)
 
-        # add points predictor group
-        self._points_predictor_group = QGroupBox("SAM Predictor - Points")
-        _points_predictor_group_layout = QGridLayout(self._points_predictor_group)
-        self._points_standard_radio = QRadioButton("Standard Predictor")
-        self._points_standard_radio.setChecked(True)
-        self._points_loop_radio = QRadioButton("Loop Single Points Predictor")
-        self._add_points_layer_btn = QPushButton("Add Points Layers")
-        self._add_points_layer_btn.setSizePolicy(FIXED)
-        self._add_points_layer_btn.clicked.connect(self._add_points_layers)
-        self._points_predict_btn = QPushButton("Predict with Points Prompt")
-        self._points_predict_btn.clicked.connect(self._on_predict)
-        _points_predictor_group_layout.addWidget(self._points_standard_radio, 0, 0)
-        _points_predictor_group_layout.addWidget(self._points_loop_radio, 0, 1)
-        _points_predictor_group_layout.addWidget(self._add_points_layer_btn, 0, 2)
-        _points_predictor_group_layout.addWidget(self._points_predict_btn, 1, 0, 1, 3)
-
-        # add box predictor group
-        self._box_predictor_group = QGroupBox("SAM Predictor - Boxes")
-        _box_predictor_group_layout = QGridLayout(self._box_predictor_group)
-        self._boxes_standard_radio = QRadioButton("Standard Predictor")
-        self._boxes_standard_radio.setChecked(True)
-        self._boxes_loop_radio = QRadioButton("Loop Single Boxes Predictor")
-        self._add_shapes_layer_btn = QPushButton("Add Shapes Layers")
-        self._add_shapes_layer_btn.setSizePolicy(FIXED)
-        self._boxes_predict_btn = QPushButton("Predict with Boxes Prompt")
-        # self._boxes_predict_btn.clicked.connect(self._on_predict)
-        _box_predictor_group_layout.addWidget(self._boxes_standard_radio, 0, 0)
-        _box_predictor_group_layout.addWidget(self._boxes_loop_radio, 0, 1)
-        _box_predictor_group_layout.addWidget(self._add_shapes_layer_btn, 0, 2)
-        _box_predictor_group_layout.addWidget(self._boxes_predict_btn, 1, 0, 1, 3)
+        # add predictor widget
+        self._predictor_widget = PredictorWidget()
+        self._predictor_widget.predictSignal.connect(self._on_predict)
+        self._predictor_widget.addLayersSignal.connect(self._add_layers)
 
         # info group
         _info_group = QGroupBox("Info")
@@ -145,9 +122,9 @@ class SamPromptWidget(QWidget):
         main_layout.addWidget(self._model_group)
         main_layout.addWidget(self._layer_group)
         main_layout.addWidget(self._automatic_seg_group)
-        main_layout.addWidget(self._points_predictor_group)
-        main_layout.addWidget(self._box_predictor_group)
+        main_layout.addWidget(self._predictor_widget)
         main_layout.addWidget(_info_group)
+        main_layout.addStretch()
 
         # connections
         self._viewer.layers.events.changed.connect(self._on_layers_changed)
@@ -160,8 +137,7 @@ class SamPromptWidget(QWidget):
         """Enable or disable the widget."""
         self._layer_group.setEnabled(state)
         self._automatic_seg_group.setEnabled(state)
-        self._points_predictor_group.setEnabled(state)
-        self._box_predictor_group.setEnabled(state)
+        self._predictor_widget.setEnabled(state)
 
     def _enable_all(self, state: bool) -> None:
         """Enable or disable the widget."""
@@ -394,38 +370,69 @@ class SamPromptWidget(QWidget):
 
     # ==========================PREDCITOR===========================
 
-    def _add_points_layers(self) -> None:
-        """Add the points layers to the viewer."""
-        layer = self._image_combo.currentText()
+    def _add_layers(self, value: dict) -> None:
+        """Add the layers for the correct prompt type."""
+        layer_name = self._image_combo.currentText()
 
-        if not layer:
+        if not layer_name:
             return
 
+        predictor_prompt = value["predictor_prompt"]
+
+        if predictor_prompt == POINTS:
+            self._add_points_layers(layer_name)
+        elif predictor_prompt == BOXES:
+            self._add_boxes_layers(layer_name)
+
+    def _add_points_layers(self, layer_name: str) -> None:
+        """Add the points layers to the viewer."""
         layers_meta = [
-            (lay.metadata.get("id"), lay.metadata.get("type"))
+            (
+                lay.metadata.get("prompt"),
+                lay.metadata.get("id"),
+                lay.metadata.get("type"),
+            )
             for lay in self._viewer.layers
         ]
 
-        if (layer, 0) not in layers_meta:
+        if (POINTS, layer_name, 0) not in layers_meta:
             self._viewer.add_points(
-                name=f"{layer}_points [BACKGROUND]",
+                name=f"{layer_name}_points [BACKGROUND]",
                 ndim=2,
-                metadata={"id": layer, "type": 0},
+                metadata={"prompt": POINTS, "id": layer_name, "type": 0},
                 edge_color="magenta",
                 face_color="magenta",
             ).mode = "add"
 
-        if (layer, 1) not in layers_meta:
+        if (POINTS, layer_name, 1) not in layers_meta:
             self._viewer.add_points(
-                name=f"{layer}_points [FOREGROUND]",
+                name=f"{layer_name}_points [FOREGROUND]",
                 ndim=2,
-                metadata={"id": layer, "type": 1},
+                metadata={"prompt": POINTS, "id": layer_name, "type": 1},
                 edge_color="green",
                 face_color="green",
             ).mode = "add"
 
-    def _on_predict(self) -> None:
-        """Start the prediction."""
+    def _add_boxes_layers(self, layer_name: str) -> None:
+        """Add the boxshapeses layers to the viewer."""
+        layers_meta = [
+            (lay.metadata.get("prompt"), lay.metadata.get("id"))
+            for lay in self._viewer.layers
+        ]
+
+        if (BOXES, layer_name) not in layers_meta:
+            self._viewer.add_shapes(
+                name=f"{layer_name}_boxes",
+                ndim=2,
+                metadata={"prompt": BOXES, "id": layer_name},
+                face_color="white",
+                edge_color="green",
+                edge_width=3,
+                opacity=0.4,
+                blending="translucent",
+            ).mode = "add_rectangle"
+
+    def _on_predict(self, value: dict) -> None:
         if self._sam is None or self._predictor is None:
             self._info_lbl.setText("Load a SAM model first.")
             return
@@ -440,14 +447,47 @@ class SamPromptWidget(QWidget):
             self._info_lbl.setText("No image layer selected.")
             return
 
-        self._info_lbl.setText("Running Predictor...")
-        logging.info("Running Predictor...")
+        predictor_prompt = value["predictor_prompt"]
+        predictor_type = value["predictor_type"]
 
+        msg = f"Running Predictor with {predictor_prompt} Prompt..."
+        self._info_lbl.setText(msg)
+        logging.info(msg)
+
+        prompts: (
+            tuple[list[tuple[tuple[int, int], int]], list[tuple[tuple[int, int], int]]]
+            | list[tuple[int, int, int, int]]
+            | None
+        ) = None
+
+        if predictor_prompt == POINTS:
+            prompts = self._get_points_coordinates(layer_name)
+            if prompts is None:
+                msg = "No Foreground or Background points."
+                logging.error(msg)
+                self._info_lbl.setText(msg)
+                return
+        elif predictor_prompt == BOXES:
+            prompts = self._get_boxes_coordinates(layer_name)
+            if prompts is None:
+                msg = "No shapes."
+                logging.error(msg)
+                self._info_lbl.setText(msg)
+                return
+
+        self._predict_worker(predictor_prompt, layer_name, prompts, predictor_type)
+
+    def _get_points_coordinates(
+        self, layer_name: str
+    ) -> (
+        tuple[list[tuple[tuple[int, int], int]], list[tuple[tuple[int, int], int]]]
+        | None
+    ):
+        """Get the points coordinates from the Points layer."""
         frg_point_layer, bkg_point_layer = self._get_point_layers(layer_name)
 
         if frg_point_layer is None or bkg_point_layer is None:
-            logging.error("No Foreground or Background points.")
-            return
+            return None
 
         frg_points: list[tuple[tuple[int, int], int]] = []
         for p in frg_point_layer.data:
@@ -459,15 +499,12 @@ class SamPromptWidget(QWidget):
             x, y = int(p[1]), int(p[0])
             bkg_points.append(((x, y), 0))
 
-        if not frg_points and not bkg_points:
-            return
-
-        self._predict_worker(layer_name, frg_points, bkg_points)
+        return frg_points, bkg_points
 
     def _get_point_layers(
         self, layer_name: str
     ) -> tuple[napari.layers.Points | None, napari.layers.Points | None]:
-        """Get the layer from the viewer."""
+        """Get the correct points layers from the viewer."""
         frg_point_layer = None
         bkg_point_layer = None
 
@@ -475,6 +512,7 @@ class SamPromptWidget(QWidget):
             if (
                 isinstance(layer, napari.layers.Points)
                 and layer.metadata.get("id") == layer_name
+                and layer.metadata.get("prompt") == POINTS
             ):
                 if layer.metadata.get("type") == 1:
                     frg_point_layer = layer
@@ -483,53 +521,108 @@ class SamPromptWidget(QWidget):
 
         return frg_point_layer, bkg_point_layer
 
+    def _get_boxes_coordinates(
+        self, layer_name: str
+    ) -> list[tuple[int, int, int, int]] | None:
+        """Get the box coordinates from the Shapes layer."""
+        boxes_layer = self._get_shapes_layers(layer_name)
+
+        if boxes_layer is None:
+            return None
+
+        box_coords: list[tuple[int, int, int, int]] = []
+        for box in boxes_layer.data:
+            top_left, _, bottom_right, _ = box
+            # round the coordinates
+            top_left = (int(top_left[1]), int(top_left[0]))
+            bottom_right = (int(bottom_right[1]), int(bottom_right[0]))
+            box_coords.append((*top_left, *bottom_right))
+
+        return box_coords or None
+
+    def _get_shapes_layers(self, layer_name: str) -> napari.layers.Shapes | None:
+        """Get the correct shapes layer from the viewer."""
+        for layer in self._viewer.layers:
+            if (
+                isinstance(layer, napari.layers.Shapes)
+                and layer.metadata.get("id") == layer_name
+                and layer.metadata.get("prompt") == BOXES
+            ):
+                return layer
+        return None
+
     def _predict_worker(
         self,
+        predictor_prompt: str,  # POINTS | BOXES
         layer_name: str,
-        foreground_points: list[tuple[tuple[int, int], int]],
-        background_points: list[tuple[tuple[int, int], int]],
+        prompts: (
+            tuple[list[tuple[tuple[int, int], int]], list[tuple[tuple[int, int], int]]]
+            | list[tuple[int, int, int, int]]
+            | None
+        ),
+        predictor_type: str,  # STANDARD | LOOP
     ) -> None:
         """Run the prediction in another thread."""
-        self._enable_all(False)
-        create_worker(
-            self._predict,
-            layer_name=layer_name,
-            foreground_points=foreground_points,
-            background_points=background_points,
-            _start_thread=True,
-            _connect={
-                "yielded": self._display_labels_predictor,
-                "finished": self._on_predict_finished,
-            },
-        )
+        if prompts is None:
+            return
 
-    def _predict(
+        self._enable_all(False)
+
+        if predictor_prompt == POINTS:
+            foreground_points, background_points = prompts
+            create_worker(
+                self._predict_with_points,
+                predictor_type=predictor_type,
+                layer_name=layer_name,
+                foreground_points=foreground_points,
+                background_points=background_points,
+                _start_thread=True,
+                _connect={
+                    "yielded": self._display_labels_predictor,
+                    "finished": self._on_predict_finished,
+                },
+            )
+        elif predictor_prompt == BOXES:
+            create_worker(
+                self._predict_with_boxes,
+                predictor_type=predictor_type,
+                layer_name=layer_name,
+                boxes=prompts,
+                _start_thread=True,
+                _connect={
+                    "yielded": self._display_labels_predictor,
+                    "finished": self._on_predict_finished,
+                },
+            )
+
+    def _predict_with_points(
         self,
+        predictor_type: str,  # STANDARD | LOOP
         layer_name: str,
         foreground_points: list[tuple[tuple[int, int], int]],
         background_points: list[tuple[tuple[int, int], int]],
-    ) -> Generator[tuple[str, list[np.ndarray], list[float], bool], None, None]:
+    ) -> Generator[tuple[str, list[np.ndarray], list[float], str], None, None]:
         """Run the SamPredictor."""
         try:
             image = self._convert_image_to_8bit(layer_name)
             self._predictor = cast(SamPredictor, self._predictor)
             self._predictor.set_image(image)
 
-            if self._points_standard_radio.isChecked():
-                masks, scores = self._standard_predictor(
+            if predictor_type == STANDARD:
+                masks, scores = self._standard_points_predictor(
                     foreground_points, background_points
                 )
-            else:
-                masks, scores = self._loop_predictor(foreground_points)
+            elif predictor_type == LOOP:
+                masks, scores = self._loop_points_predictor(foreground_points)
 
             self._success = True
 
-            yield layer_name, masks, scores, self._points_standard_radio.isChecked()
+            yield layer_name, masks, scores, predictor_type
         except Exception as e:
             self._success = False
             logging.exception(e)
 
-    def _standard_predictor(
+    def _standard_points_predictor(
         self,
         foreground_points: list[tuple[tuple[int, int], int]],
         background_points: list[tuple[tuple[int, int], int]],
@@ -556,12 +649,12 @@ class SamPromptWidget(QWidget):
             self._success = True
         except Exception as e:
             self._success = False
-            masks, score = [], []
             logging.exception(e)
+            return [], []
 
         return masks, score
 
-    def _loop_predictor(
+    def _loop_points_predictor(
         self, foreground_points: list[tuple[tuple[int, int], int]]
     ) -> tuple[list[np.ndarray], list[float]]:
         """The Loop SAM Predictor.
@@ -574,12 +667,9 @@ class SamPromptWidget(QWidget):
             masks: list[np.ndarray] = []
             scores: list[float] = []
             for point, label in foreground_points:
-                input_point = np.array([point])
-                input_label = np.array([label])
-
                 mask, score, _ = self._predictor.predict(
-                    point_coords=input_point,
-                    point_labels=input_label,
+                    point_coords=np.array([point]),
+                    point_labels=np.array([label]),
                     multimask_output=False,
                 )
                 masks.append(mask)
@@ -587,8 +677,56 @@ class SamPromptWidget(QWidget):
             self._success = True
         except Exception as e:
             self._success = False
-            masks, score = [], []
             logging.exception(e)
+            return [], []
+
+        return masks, scores
+
+    def _predict_with_boxes(
+        self,
+        predictor_type: str,  # STANDARD | LOOP
+        layer_name: str,
+        boxes: list[tuple[int, int, int, int]],
+    ) -> Generator[tuple[str, list[np.ndarray], list[float], str], None, None]:
+        """Run the SamPredictor."""
+        try:
+            image = self._convert_image_to_8bit(layer_name)
+            self._predictor = cast(SamPredictor, self._predictor)
+            self._predictor.set_image(image)
+
+            if predictor_type == LOOP:
+                masks, scores = self._loop_boxes_predictor(boxes)
+
+            self._success = True
+
+            yield layer_name, masks, scores, predictor_type
+        except Exception as e:
+            self._success = False
+            logging.exception(e)
+
+    def _loop_boxes_predictor(
+        self, boxes: list[tuple[int, int, int, int]]
+    ) -> tuple[list[np.ndarray], list[float]]:
+        """The Standard SAM Predictor.
+
+        Feed boxes to the predictor in a list and get the masks and scores.
+        """
+        try:
+            self._predictor = cast(SamPredictor, self._predictor)
+            masks: list[np.ndarray] = []
+            scores: list[float] = []
+            for box in boxes:
+                mask, score, _ = self._predictor.predict(
+                    box=np.array(box), multimask_output=False
+                )
+                masks.append(mask)
+                scores.append(score)
+
+            self._success = True
+        except Exception as e:
+            self._success = False
+            logging.exception(e)
+            return [], []
 
         return masks, scores
 
@@ -604,16 +742,15 @@ class SamPromptWidget(QWidget):
 
     @ensure_main_thread  # type: ignore [misc]
     def _display_labels_predictor(
-        self, args: tuple[str, list[np.ndarray], list[float], bool]
+        self, args: tuple[str, list[np.ndarray], list[float], str]
     ) -> None:
         """Display the masks as labels in the viewer."""
-        layer_name, masks, scores, standard = args
+        layer_name, masks, scores, predictor_type = args
 
         if self._console:
             self._console.push({"masks": masks, "scores": scores})
 
-        _type = "Standard" if standard else "Loop"
-        name = f"{layer_name}_labels[{_type}]"
+        name = f"{layer_name}_labels[{predictor_type}]"
 
         if len(masks) == 1:
             labeled_mask = measure.label(masks[0])
