@@ -21,7 +21,7 @@ from qtpy.QtWidgets import (
 )
 from segment_anything import SamAutomaticMaskGenerator, SamPredictor, sam_model_registry
 from skimage import measure
-from superqt.utils import create_worker, ensure_main_thread
+from superqt.utils import create_worker, ensure_main_thread, signals_blocked
 
 from napari_sam_prompt._sub_widgets._auto_mask_generator import AutoMaskGeneratorWidget
 from napari_sam_prompt._sub_widgets._predictor_widget import PredictorWidget
@@ -58,9 +58,11 @@ class SamPromptWidget(QWidget):
 
         self._console = getattr(self._viewer.window._qt_viewer, "console", None)
 
+        self._device: str = ""
         self._sam: Sam | None = None
         self._predictor: SamPredictor | None = None
         self._mask_generator: SamAutomaticMaskGenerator | None = None
+        self._image_set: bool = False
 
         self._success = False
 
@@ -97,6 +99,7 @@ class SamPromptWidget(QWidget):
         _image_combo_lbl = QLabel("Layer:")
         _image_combo_lbl.setSizePolicy(FIXED)
         self._image_combo = QComboBox()
+        self._image_combo.currentTextChanged.connect(self._on_image_combo_changed)
         _image_group_layout.addWidget(_image_combo_lbl, 0, 0)
         _image_group_layout.addWidget(self._image_combo, 0, 1)
 
@@ -126,7 +129,7 @@ class SamPromptWidget(QWidget):
         main_layout.addWidget(_info_group)
         main_layout.addStretch()
 
-        # connections
+        # viewer connections
         self._viewer.layers.events.changed.connect(self._on_layers_changed)
         self._viewer.layers.events.inserted.connect(self._on_layers_changed)
         self._viewer.layers.events.removed.connect(self._on_layers_changed)
@@ -146,15 +149,29 @@ class SamPromptWidget(QWidget):
 
     def _on_layers_changed(self) -> None:
         """Update the layer combo box."""
-        current_layer = self._image_combo.currentText()
-        self._image_combo.clear()
-        for layer in self._viewer.layers:
-            if isinstance(layer, napari.layers.Image):
-                self._image_combo.addItem(layer.name)
-        if current_layer and current_layer in self._viewer.layers:
-            self._image_combo.setCurrentText(current_layer)
+        current_combo_layers = [
+            self._image_combo.itemText(i) for i in range(self._image_combo.count())
+        ]
 
-    def _convert_image_to_8bit(self, layer_name: str) -> np.ndarray:
+        # block signals to avoid setting the image to the predictor while updating
+        with signals_blocked(self._image_combo):
+            self._image_combo.clear()
+            layers = [
+                layer.name
+                for layer in self._viewer.layers
+                if isinstance(layer, napari.layers.Image)
+            ]
+            self._image_combo.addItems(layers)
+
+        if not layers:
+            self._image_set = False
+            return
+
+        if layers != current_combo_layers:
+            # set the image to the predictor
+            self._on_image_combo_changed()
+
+    def _convert_image(self, layer_name: str) -> np.ndarray:
         """Convert the image to 8-bit and stack to 3 channels."""
         # TODO: Handle already 8-bit, rgb images + stacks
         layer = cast(napari.layers.Image, self._viewer.layers[layer_name])
@@ -200,12 +217,11 @@ class SamPromptWidget(QWidget):
             _connect={"yielded": self._update_info},
         )
 
-    def _update_info(self, args: tuple[bool, str]) -> None:
+    def _update_info(self, loaded: bool) -> None:
         """Update the info label."""
-        loaded, device = args
         if loaded:
             self._enable_widgets(True)
-            _loaded_status = f"Model loaded successfully.\nUsing: {device.upper()}"
+            _loaded_status = f"Model loaded successfully.\nUsing: {self._device}"
             logging.info("Model loaded successfully.")
         else:
             self._enable_widgets(False)
@@ -221,28 +237,72 @@ class SamPromptWidget(QWidget):
 
     def _load(
         self, model_checkpoint: str, model_type: str
-    ) -> Generator[tuple[bool, str], None, None]:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    ) -> Generator[bool, None, None]:
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
         try:
             self._sam = sam_model_registry[model_type](checkpoint=model_checkpoint)
         except Exception as e:
             self._sam = None
-            yield False, ""
+            yield False
             logging.exception(e)
             return
 
-        self._sam.to(device=device)
+        self._sam.to(device=self._device)
 
         try:
             self._predictor = SamPredictor(self._sam)
         except Exception as e:
             self._predictor = None
-            yield False, ""
+            yield False
             logging.exception(e)
             return
 
-        yield True, device
+        yield True
+
+    # ====================SET IMAGE TO PREDICTOR====================
+
+    def _on_image_combo_changed(self) -> None:
+        """Set the image to the predictor."""
+        if self._predictor is None:
+            self._info_lbl.setText("Load a SAM model first.")
+            return
+        self._enable_widgets(False)
+        self._set_image_to_predictor_worker()
+
+    def _set_image_to_predictor_worker(self) -> None:
+        """Set the image to the predictor in another thread."""
+        create_worker(
+            self._set_image_to_predictor,
+            _start_thread=True,
+            _connect={"finished": self._on_image_set_finished},
+        )
+
+    def _set_image_to_predictor(self) -> None:
+        """Set the image to the predictor."""
+        self._image_set = False
+        msg = "Setting the image to the predictor..."
+        self._info_lbl.setText(msg)
+        logging.info(msg)
+
+        try:
+            image = self._convert_image(self._image_combo.currentText())
+            self._predictor = cast(SamPredictor, self._predictor)
+            self._predictor.set_image(image)
+            self._image_set = True
+        except Exception as e:
+            logging.exception(e)
+            return
+
+    def _on_image_set_finished(self) -> None:
+        """Enable the widget after setting the image to the predictor."""
+        self._enable_widgets(True)
+        if self._image_set:
+            self._info_lbl.setText("Image set to the predictor.")
+            logging.info("Image set to the predictor.")
+        else:
+            self._info_lbl.setText("Error while setting the image to the predictor!")
+            logging.error("Error while setting the image to the predictor!")
 
     # ====================AUTO MASK GENERATOR====================
 
@@ -274,7 +334,7 @@ class SamPromptWidget(QWidget):
             )
             logging.exception(e)
 
-        image = self._convert_image_to_8bit(layer_name)
+        image = self._convert_image(layer_name)
 
         self._generate_worker(image, layer_name)
 
@@ -450,6 +510,9 @@ class SamPromptWidget(QWidget):
         predictor_prompt = value["predictor_prompt"]
         predictor_type = value["predictor_type"]
 
+        if not self._image_set:
+            self._on_image_combo_changed()
+
         msg = f"Running Predictor with {predictor_prompt} Prompt..."
         self._info_lbl.setText(msg)
         logging.info(msg)
@@ -467,6 +530,7 @@ class SamPromptWidget(QWidget):
                 logging.error(msg)
                 self._info_lbl.setText(msg)
                 return
+
         elif predictor_prompt == BOXES:
             prompts = self._get_boxes_coordinates(layer_name)
             if prompts is None:
@@ -563,7 +627,7 @@ class SamPromptWidget(QWidget):
         predictor_type: str,  # STANDARD | LOOP
     ) -> None:
         """Run the prediction in another thread."""
-        if prompts is None:
+        if prompts is None or self._predictor is None:
             return
 
         self._enable_all(False)
@@ -604,9 +668,9 @@ class SamPromptWidget(QWidget):
     ) -> Generator[tuple[str, list[np.ndarray], list[float], str], None, None]:
         """Run the SamPredictor."""
         try:
-            image = self._convert_image_to_8bit(layer_name)
-            self._predictor = cast(SamPredictor, self._predictor)
-            self._predictor.set_image(image)
+            # image = self._convert_image_to_8bit(layer_name)
+            # self._predictor = cast(SamPredictor, self._predictor)
+            # self._predictor.set_image(image)
 
             if predictor_type == STANDARD:
                 masks, scores = self._standard_points_predictor(
@@ -690,9 +754,9 @@ class SamPromptWidget(QWidget):
     ) -> Generator[tuple[str, list[np.ndarray], list[float], str], None, None]:
         """Run the SamPredictor."""
         try:
-            image = self._convert_image_to_8bit(layer_name)
-            self._predictor = cast(SamPredictor, self._predictor)
-            self._predictor.set_image(image)
+            # image = self._convert_image_to_8bit(layer_name)
+            # self._predictor = cast(SamPredictor, self._predictor)
+            # self._predictor.set_image(image)
 
             if predictor_type == LOOP:
                 masks, scores = self._loop_boxes_predictor(boxes)
