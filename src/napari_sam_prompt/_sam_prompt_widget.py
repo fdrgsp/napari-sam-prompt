@@ -93,7 +93,8 @@ class SamPromptWidget(QWidget):
         self._setting_image: bool = False
 
         # this is to store all the info form the automatic mask generator and the
-        # predictor # TODO: use dataclass
+        # predictor. This is added to the napari console so we can check the info
+        # TODO: maybe use dataclass
         self._stored_info: dict[str, dict[str, Any]] = {}
         # =========================STRUCTURE==========================
         # self._stored_info = {
