@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING, Any, Generator, cast
 
@@ -14,6 +15,7 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -21,26 +23,46 @@ from qtpy.QtWidgets import (
 )
 from segment_anything import SamAutomaticMaskGenerator, SamPredictor, sam_model_registry
 from skimage import measure
-from superqt.utils import create_worker, ensure_main_thread, signals_blocked
+from superqt.utils import create_worker, ensure_main_thread
 
 from napari_sam_prompt._sub_widgets._auto_mask_generator import AutoMaskGeneratorWidget
-from napari_sam_prompt._sub_widgets._predictor_widget import PredictorWidget
+from napari_sam_prompt._sub_widgets._predictor_widget import (
+    BOXES,
+    POINTS,
+    PredictorWidget,
+)
 
 if TYPE_CHECKING:
+    from napari.utils.events import Event
     from segment_anything.modeling import Sam
 
-POINTS = "points"
-BOXES = "boxes"
-STANDARD = "standard"
-LOOP = "loop"
+
 FIXED = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 EXTENDED = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+AUTO_MASK = "auto_mask_generator"
+PREDICTOR = "predictor"
+IMAGE_SET = "image_set"
+EMBEDDINGS = "embeddings"
+MASKS = "masks"
+SCORES = "scores"
+COORDS = "coords"
 
 logging.basicConfig(
     # filename="napari_sam_prompt.log", # uncomment to log to a file in this directory
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+
+
+class ImageToPredictorMessageBox(QMessageBox):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+
+        self.setIcon(QMessageBox.Icon.Information)
+        self.setWindowTitle("Image to Predictor")
+        self.setText("Wait for the image to be set to the predictor...")
+        self.setStandardButtons(QMessageBox.StandardButton.NoButton)
 
 
 class SamPromptWidget(QWidget):
@@ -58,11 +80,42 @@ class SamPromptWidget(QWidget):
 
         self._console = getattr(self._viewer.window._qt_viewer, "console", None)
 
+        self._image_to_predictor_msg = ImageToPredictorMessageBox(
+            self._viewer.window._qt_viewer
+        )
+
         self._device: str = ""
         self._sam: Sam | None = None
         self._predictor: SamPredictor | None = None
         self._mask_generator: SamAutomaticMaskGenerator | None = None
-        self._image_set: bool = False
+        self._current_image: str = ""
+
+        self._setting_image: bool = False
+
+        # this is to store all the info form the automatic mask generator and the
+        # predictor # TODO: use dataclass
+        self._stored_info: dict[str, dict[str, Any]] = {}
+        # =========================STRUCTURE==========================
+        # self._stored_info = {
+        #     "image_name": {
+        #         AUTO_MASK: list[dict[str, Any]],
+        #         PREDICTOR: {
+        #             IMAGE_SET: bool,
+        #             EMBEDDINGS: torch.Tensor,
+        #             POINTS: {
+        #                 MASKS: list[np.ndarray],
+        #                 SCORES: list[float],
+        #                 COORDS: list[tuple[int, int]],
+        #             },
+        #             BOXES: {
+        #                 MASKS: list[np.ndarray],
+        #                 SCORES: list[float],
+        #                 COORDS: list[tuple[int, int, int, int]],
+        #             },
+        #         },
+        #     }
+        # }
+        # ============================================================
 
         self._success = False
 
@@ -109,7 +162,6 @@ class SamPromptWidget(QWidget):
 
         # add predictor widget
         self._predictor_widget = PredictorWidget()
-        self._predictor_widget.predictSignal.connect(self._on_predict)
         self._predictor_widget.addLayersSignal.connect(self._add_layers)
 
         # info group
@@ -134,6 +186,8 @@ class SamPromptWidget(QWidget):
         self._viewer.layers.events.inserted.connect(self._on_layers_changed)
         self._viewer.layers.events.removed.connect(self._on_layers_changed)
 
+        self._viewer.layers.selection.events.changed.connect(self._on_layer_selected)
+
         self._enable_widgets(False)
 
     def _enable_widgets(self, state: bool) -> None:
@@ -147,29 +201,62 @@ class SamPromptWidget(QWidget):
         self._model_group.setEnabled(state)
         self._enable_widgets(state)
 
-    def _on_layers_changed(self) -> None:
+    def _on_image_combo_changed(self) -> None:
+        """Update the current image."""
+        self._current_image = self._image_combo.currentText()
+
+    def _on_layers_changed(self, e: Event) -> None:
         """Update the layer combo box."""
-        current_combo_layers = [
-            self._image_combo.itemText(i) for i in range(self._image_combo.count())
+        image_layers = [
+            layer.name
+            for layer in self._viewer.layers
+            if isinstance(layer, napari.layers.Image)
         ]
 
-        # block signals to avoid setting the image to the predictor while updating
-        with signals_blocked(self._image_combo):
-            self._image_combo.clear()
-            layers = [
-                layer.name
-                for layer in self._viewer.layers
-                if isinstance(layer, napari.layers.Image)
-            ]
-            self._image_combo.addItems(layers)
+        # remove the layers that are not in the viewer anymore
+        for layer in list(self._stored_info.keys()):
+            if layer in image_layers:
+                continue
+            self._stored_info.pop(layer, None)
+            # update info in the console
+            if self._console:
+                self._console.push({"info": self._stored_info})
+            # delete any associated layers
+            for _layer in list(self._viewer.layers):
+                if _layer.metadata.get("id") == layer:
+                    self._viewer.layers.remove(_layer)
 
-        if not layers:
-            self._image_set = False
-            return
+        # reverse the layers to show the last added layer first
+        self._image_combo.clear()
+        self._image_combo.addItems(reversed(image_layers))
 
-        if layers != current_combo_layers:
-            # set the image to the predictor
-            self._on_image_combo_changed()
+        # add any newely added layers to the _stored_info
+        for layer in image_layers:
+            if layer not in self._stored_info:
+                # self._image_set[layer] = (False, None)
+                self._stored_info[layer] = {
+                    AUTO_MASK: [],
+                    PREDICTOR: {
+                        IMAGE_SET: False,
+                        EMBEDDINGS: None,
+                        POINTS: {MASKS: [], SCORES: [], COORDS: []},
+                        BOXES: {MASKS: [], SCORES: [], COORDS: []},
+                    },
+                }
+
+    def _on_layer_selected(self, e: Event) -> None:
+        """Change the current image to the selected layer and update the combo box."""
+        with contextlib.suppress(Exception):
+            active_layer = cast(napari.layers, e.source.active)
+            layer_name = active_layer.name
+
+            # in case we select a points or shapes layer
+            if _id := active_layer.metadata.get("id"):
+                layer_name = _id
+
+            if self._current_image != layer_name:
+                self._current_image = layer_name
+                self._image_combo.setCurrentText(layer_name)
 
     def _convert_image(self, layer_name: str) -> np.ndarray:
         """Convert the image to 8-bit and stack to 3 channels."""
@@ -233,7 +320,7 @@ class SamPromptWidget(QWidget):
         self._load_info_lbl.setText(_loaded_status)
 
         if self._console:
-            self._console.push({"sam": self._sam, "predictor": self._predictor})
+            self._console.push({"sam": self._sam, PREDICTOR: self._predictor})
 
     def _load(
         self, model_checkpoint: str, model_type: str
@@ -242,7 +329,7 @@ class SamPromptWidget(QWidget):
 
         try:
             self._sam = sam_model_registry[model_type](checkpoint=model_checkpoint)
-        except Exception as e:
+        except Exception as e:  # be more specific
             self._sam = None
             yield False
             logging.exception(e)
@@ -252,57 +339,13 @@ class SamPromptWidget(QWidget):
 
         try:
             self._predictor = SamPredictor(self._sam)
-        except Exception as e:
+        except Exception as e:  # be more specific
             self._predictor = None
             yield False
             logging.exception(e)
             return
 
         yield True
-
-    # ====================SET IMAGE TO PREDICTOR====================
-
-    def _on_image_combo_changed(self) -> None:
-        """Set the image to the predictor."""
-        if self._predictor is None:
-            self._info_lbl.setText("Load a SAM model first.")
-            return
-        self._enable_widgets(False)
-        self._set_image_to_predictor_worker()
-
-    def _set_image_to_predictor_worker(self) -> None:
-        """Set the image to the predictor in another thread."""
-        create_worker(
-            self._set_image_to_predictor,
-            _start_thread=True,
-            _connect={"finished": self._on_image_set_finished},
-        )
-
-    def _set_image_to_predictor(self) -> None:
-        """Set the image to the predictor."""
-        self._image_set = False
-        msg = "Setting the image to the predictor..."
-        self._info_lbl.setText(msg)
-        logging.info(msg)
-
-        try:
-            image = self._convert_image(self._image_combo.currentText())
-            self._predictor = cast(SamPredictor, self._predictor)
-            self._predictor.set_image(image)
-            self._image_set = True
-        except Exception as e:
-            logging.exception(e)
-            return
-
-    def _on_image_set_finished(self) -> None:
-        """Enable the widget after setting the image to the predictor."""
-        self._enable_widgets(True)
-        if self._image_set:
-            self._info_lbl.setText("Image set to the predictor.")
-            logging.info("Image set to the predictor.")
-        else:
-            self._info_lbl.setText("Error while setting the image to the predictor!")
-            logging.error("Error while setting the image to the predictor!")
 
     # ====================AUTO MASK GENERATOR====================
 
@@ -312,12 +355,10 @@ class SamPromptWidget(QWidget):
             self._info_lbl.setText("Load a SAM model first.")
             return
 
-        layer_name = self._image_combo.currentText()
-
         if (
             not self._viewer.layers
-            or not layer_name
-            or layer_name not in self._viewer.layers
+            or not self._current_image
+            or self._current_image not in self._viewer.layers
         ):
             self._info_lbl.setText("No image layer selected.")
             return
@@ -327,16 +368,15 @@ class SamPromptWidget(QWidget):
 
         try:
             self._init_generator()
-        except Exception as e:
+        except Exception as e:  # be more specific
             self._mask_generator = None
-            self._info_lbl.setText(
-                "Error while initializing the Automatic Mask Generator!"
-            )
+            msg = "Error while initializing the Automatic Mask Generator!"
+            self._info_lbl.setText(msg)
             logging.exception(e)
 
-        image = self._convert_image(layer_name)
+        image = self._convert_image(self._current_image)
 
-        self._generate_worker(image, layer_name)
+        self._generate_worker(image)
 
     def _init_generator(self) -> None:
         """Initialize the SAM Automatic Mask Generator."""
@@ -359,12 +399,11 @@ class SamPromptWidget(QWidget):
             output_mode=options._output_mode.text(),
         )
 
-    def _generate_worker(self, image: np.ndarray, layer_name: str) -> None:
+    def _generate_worker(self, image: np.ndarray) -> None:
         self._enable_all(False)
         create_worker(
             self._generate,
             image=image,
-            layer_name=layer_name,
             _start_thread=True,
             _connect={
                 "yielded": self._display_labels_auto_segmentation,
@@ -372,20 +411,20 @@ class SamPromptWidget(QWidget):
             },
         )
 
-    def _generate(
-        self, image: np.ndarray, layer_name: str
-    ) -> Generator[tuple[list[dict[str, Any]], str], None, None]:
+    def _generate(self, image: np.ndarray) -> Generator[list[np.ndarray], None, None]:
         """Generate masks using the SAM Automatic Mask Generator."""
         try:
             self._mask_generator = cast(SamAutomaticMaskGenerator, self._mask_generator)
             masks = self._mask_generator.generate(image)
+            self._stored_info[self._current_image][AUTO_MASK] = masks
             self._success = True
-        except Exception as e:
+        except Exception as e:  # be more specific
             self._success = False
             logging.exception(e)
-            yield [], layer_name
+            self._stored_info[self._current_image][AUTO_MASK] = []
+            yield []
             return
-        yield masks, layer_name
+        yield masks
 
     def _on_auto_mask_generator_finished(self) -> None:
         """Enable the widget after the prediction is finished."""
@@ -398,14 +437,12 @@ class SamPromptWidget(QWidget):
             logging.error("Error while running the Automatic Mask Generator!")
 
     @ensure_main_thread  # type: ignore [misc]
-    def _display_labels_auto_segmentation(
-        self, args: tuple[list[dict[str, Any]], str]
-    ) -> None:
+    def _display_labels_auto_segmentation(self, masks: list[np.ndarray]) -> None:
         """Display the masks in a stack."""
-        masks, layer_name = args
+        layer_name = self._current_image
 
         if self._console:
-            self._console.push({"masks": masks})
+            self._console.push({"info": self._stored_info})
 
         segmented: list[np.ndarray] = [
             mask["segmentation"]
@@ -415,7 +452,8 @@ class SamPromptWidget(QWidget):
                 and mask["area"] <= self._automatic_seg_group._max_area.value()
             )
         ]
-        name = f"{layer_name}_masks[Automatic]"
+
+        # name = f"{layer_name}_masks[Automatic]"
         # # create a stack
         # stack = np.stack(segmented, axis=0)
         # self._viewer.add_image(stack, name=name, blending="additive")
@@ -426,371 +464,353 @@ class SamPromptWidget(QWidget):
             labeled_mask = measure.label(mask)
             labeled_mask[labeled_mask != 0] += final_mask.max()
             final_mask += labeled_mask
-        self._viewer.add_labels(final_mask, name=name)
+
+        try:
+            labels = cast(napari.layers.Labels, self._viewer.layers[name])
+            labels.data = final_mask
+        except KeyError:
+            self._viewer.add_labels(final_mask, name=name, metadata={"id": layer_name})
+
+    # ====================SET IMAGE TO PREDICTOR====================
+
+    def _prepare_and_run_predictor(self, layer: napari.layers) -> None:
+        """Prepare the predictor and run it on the current image."""
+        if self._predictor is None:
+            self._info_lbl.setText("Load a SAM model first.")
+            return
+
+        # if self._current_image not in self._image_set:
+        if self._current_image not in self._stored_info:
+            self._info_lbl.setText("No image layer selected.")
+            return
+
+        predictor_info = self._stored_info[self._current_image][PREDICTOR]
+        image_set = predictor_info.get(IMAGE_SET, False)
+        embeddings = predictor_info.get(EMBEDDINGS)
+
+        self._enable_all(False)
+
+        # if the image have never been set to the predictor, set it in another thread
+        # and when finished, run the predictor
+        if not image_set or embeddings is None:
+            self._setting_image = True
+            self._image_to_predictor_msg.show()
+            msg = "Setting the image to the predictor..."
+            self._info_lbl.setText(msg)
+            logging.info(msg)
+            create_worker(
+                self._image_to_predictor,
+                _start_thread=True,
+                _connect={"finished": lambda: self._on_image_set_finished(layer)},
+            )
+
+        # if the image has been set to the predictor but the embeddings are different
+        # set the embeddings to the predictor from the _image_set variable
+        elif not torch.allclose(self._predictor.features, embeddings):
+            msg = "Setting the image embeddings to the predictor..."
+            self._info_lbl.setText(msg)
+            logging.info(msg)
+            self._set_image_embeddings_to_predictor(image_set, embeddings)
+            prompts = layer.data
+            self._on_predict(self._predictor_widget.mode(), prompts)
+
+        else:
+            prompts = layer.data
+            self._on_predict(self._predictor_widget.mode(), prompts)
+
+    def _image_to_predictor(self) -> None:
+        """Set the image to the predictor."""
+        try:
+            image = self._convert_image(self._current_image)
+            self._predictor = cast(SamPredictor, self._predictor)
+            self._predictor.set_image(image)
+
+            # store the image embeddings
+            store = self._stored_info[self._current_image][PREDICTOR]
+            store[IMAGE_SET] = True
+            store[EMBEDDINGS] = self._predictor.get_image_embedding()
+            self._stored_info[self._current_image][PREDICTOR] = store
+
+        except Exception as e:  # be more specific
+            logging.exception(e)
+            return
+
+    def _on_image_set_finished(self, layer: napari.layers) -> None:
+        """Enable the widget after setting the image to the predictor."""
+        self._enable_all(True)
+
+        self._setting_image = False
+
+        self._image_to_predictor_msg.hide()
+
+        predictor_info = self._stored_info[self._current_image][PREDICTOR]
+        image_set = predictor_info.get(IMAGE_SET)
+        embeddings = predictor_info.get(EMBEDDINGS)
+        if image_set and embeddings is not None:
+            msg = "Image set to the predictor."
+            self._info_lbl.setText(msg)
+            logging.info(msg)
+            prompts = layer.data
+            self._on_predict(self._predictor_widget.mode(), prompts)
+        else:
+            msg = "Error while setting the image to the predictor!"
+            self._info_lbl.setText(msg)
+            logging.error(msg)
+
+    def _set_image_embeddings_to_predictor(
+        self, image_set: bool, embeddings: torch.Tensor
+    ) -> bool:
+        """Set the image embeddings to the predictor."""
+        if self._predictor is None:
+            self._info_lbl.setText("Load a SAM model first.")
+            return False
+        if image_set and embeddings is not None:
+            self._predictor.features = embeddings
+            return True
+        return False
 
     # ==========================PREDCITOR===========================
 
-    def _add_layers(self, value: dict) -> None:
+    def _add_layers(self, mode: str) -> None:
         """Add the layers for the correct prompt type."""
-        layer_name = self._image_combo.currentText()
-
-        if not layer_name:
+        if not self._current_image:
             return
 
-        predictor_prompt = value["predictor_prompt"]
-
-        if predictor_prompt == POINTS:
-            self._add_points_layers(layer_name)
-        elif predictor_prompt == BOXES:
-            self._add_boxes_layers(layer_name)
-
-    def _add_points_layers(self, layer_name: str) -> None:
-        """Add the points layers to the viewer."""
-        layers_meta = [
-            (
-                lay.metadata.get("prompt"),
-                lay.metadata.get("id"),
-                lay.metadata.get("type"),
-            )
-            for lay in self._viewer.layers
-        ]
-
-        if (POINTS, layer_name, 0) not in layers_meta:
-            self._viewer.add_points(
-                name=f"{layer_name}_points [BACKGROUND]",
-                ndim=2,
-                metadata={"prompt": POINTS, "id": layer_name, "type": 0},
-                edge_color="magenta",
-                face_color="magenta",
-            ).mode = "add"
-
-        if (POINTS, layer_name, 1) not in layers_meta:
-            self._viewer.add_points(
-                name=f"{layer_name}_points [FOREGROUND]",
-                ndim=2,
-                metadata={"prompt": POINTS, "id": layer_name, "type": 1},
-                edge_color="green",
-                face_color="green",
-            ).mode = "add"
-
-    def _add_boxes_layers(self, layer_name: str) -> None:
-        """Add the boxshapeses layers to the viewer."""
         layers_meta = [
             (lay.metadata.get("prompt"), lay.metadata.get("id"))
             for lay in self._viewer.layers
         ]
 
-        if (BOXES, layer_name) not in layers_meta:
-            self._viewer.add_shapes(
-                name=f"{layer_name}_boxes",
+        if mode == POINTS and (POINTS, self._current_image) not in layers_meta:
+            layer = self._viewer.add_points(
+                name=f"{self._current_image} [{POINTS.upper()}]",
                 ndim=2,
-                metadata={"prompt": BOXES, "id": layer_name},
+                metadata={"prompt": POINTS, "id": self._current_image},
+                edge_color="green",
+                face_color="green",
+            )
+            layer.mode = "add"
+            layer.events.data.connect(self._data_changed)
+
+        elif mode == BOXES and (BOXES, self._current_image) not in layers_meta:
+            layer = self._viewer.add_shapes(
+                name=f"{self._current_image} [{BOXES.upper()}]",
+                ndim=2,
+                metadata={"prompt": BOXES, "id": self._current_image},
                 face_color="white",
                 edge_color="green",
                 edge_width=3,
                 opacity=0.4,
                 blending="translucent",
-            ).mode = "add_rectangle"
+            )
+            layer.mode = "add_rectangle"
+            layer.events.data.connect(self._data_changed)
 
-    def _on_predict(self, value: dict) -> None:
+    def _data_changed(self, event: Event) -> None:
+        """Handle the data change event and run the predictor."""
+        # return if the image is being set to the predictor
+        if self._setting_image:
+            return
+
+        layer = cast(napari.layers, event.source)
+
+        # clear the prompt layer if predictor is not set
+        if self._predictor is None:
+            # block to avoid recursion
+            with layer.events.data.blocker():
+                layer.data = []
+            self._info_lbl.setText("Load a SAM model first.")
+            return
+
+        # stored = self._prompts_coords.get(self._current_image)
+        stored = self._stored_info.get(self._current_image, {})
+        mode = self._predictor_widget.mode()
+        coords = stored.get(PREDICTOR, {}).get(mode, {}).get(COORDS, [])
+
+        # if a prompt is removed
+        if len(layer.data) < len(coords):
+            name = f"{self._current_image}_LABELS [{mode.upper()}]"
+            if len(layer.data) == 0:
+                # no prompts are left
+                self._clear_mode_info(mode)
+                # delete the labels layer
+                with contextlib.suppress(KeyError):
+                    labels = cast(napari.layers.Labels, self._viewer.layers[name])
+                    self._viewer.layers.remove(labels)
+
+            else:
+                # if the use removed a prompt, but we still have some prompts left
+                # we need to re-run the predictor with the new prompts.
+
+                # if there is only one point, we need to clear the stored prompts
+                if len(layer.data) == 1:
+                    self._clear_mode_info(mode)
+
+                # clearing the labels layer
+                with contextlib.suppress(KeyError):
+                    labels = cast(napari.layers.Labels, self._viewer.layers[name])
+                    labels.data = np.zeros_like(labels.data)
+                self._prepare_and_run_predictor(layer)
+
+        elif len(layer.data) > len(coords):
+            self._prepare_and_run_predictor(layer)
+
+    def _clear_mode_info(self, mode: str) -> None:
+        """Clear the stored info for the current mode."""
+        self._stored_info[self._current_image][PREDICTOR][mode][COORDS] = []
+        self._stored_info[self._current_image][PREDICTOR][mode][MASKS] = []
+        self._stored_info[self._current_image][PREDICTOR][mode][SCORES] = []
+
+    def _on_predict(self, mode: str, prompts: np.ndarray) -> None:
+        """Prepare the prompts and run the predictor."""
         if self._sam is None or self._predictor is None:
             self._info_lbl.setText("Load a SAM model first.")
             return
 
-        layer_name = self._image_combo.currentText()
-
-        if (
-            not self._viewer.layers
-            or not layer_name
-            or layer_name not in self._viewer.layers
-        ):
-            self._info_lbl.setText("No image layer selected.")
-            return
-
-        predictor_prompt = value["predictor_prompt"]
-        predictor_type = value["predictor_type"]
-
-        if not self._image_set:
-            self._on_image_combo_changed()
-
-        msg = f"Running Predictor with {predictor_prompt} Prompt..."
+        msg = f"Running Predictor with {mode} Prompts..."
         self._info_lbl.setText(msg)
         logging.info(msg)
 
-        prompts: (
-            tuple[list[tuple[tuple[int, int], int]], list[tuple[tuple[int, int], int]]]
-            | list[tuple[int, int, int, int]]
-            | None
-        ) = None
+        if mode == POINTS:
+            prompts = [(int(point[1]), int(point[0])) for point in prompts]
+        else:  # mode == BOXES:
+            # prompt as need to be top_left and bottom_right coordinates
+            boxes = []
+            for box in prompts:
+                top_left = (int(box[0][1]), int(box[0][0]))
+                bottom_right = (int(box[2][1]), int(box[2][0]))
+                boxes.append((*top_left, *bottom_right))
+            prompts = boxes
 
-        if predictor_prompt == POINTS:
-            prompts = self._get_points_coordinates(layer_name)
-            if prompts is None:
-                msg = "No Foreground or Background points."
-                logging.error(msg)
-                self._info_lbl.setText(msg)
-                return
+        # if the current image has already prompts for the current mode and the length
+        # of the new prompts is less than the existing prompts, means thet the user
+        # removed a prompts, so we need re-run the predictor with the new prompts
+        predictor_info = self._stored_info[self._current_image][PREDICTOR]
+        if stored_prompts := predictor_info.get(mode, []):
+            n_prompts = len(stored_prompts[COORDS])
+            # use only the last added prompt
+            updated_prompts = [prompts[-1]] if len(prompts) > n_prompts else prompts
+        else:
+            updated_prompts = prompts
 
-        elif predictor_prompt == BOXES:
-            prompts = self._get_boxes_coordinates(layer_name)
-            if prompts is None:
-                msg = "No shapes."
-                logging.error(msg)
-                self._info_lbl.setText(msg)
-                return
+        # update the prompts coordinates
+        self._stored_info[self._current_image][PREDICTOR][mode][COORDS] = prompts
 
-        self._predict_worker(predictor_prompt, layer_name, prompts, predictor_type)
+        # run the predictor
+        self._predict_worker(mode, updated_prompts)
 
-    def _get_points_coordinates(
-        self, layer_name: str
-    ) -> (
-        tuple[list[tuple[tuple[int, int], int]], list[tuple[tuple[int, int], int]]]
-        | None
-    ):
-        """Get the points coordinates from the Points layer."""
-        frg_point_layer, bkg_point_layer = self._get_point_layers(layer_name)
-
-        if frg_point_layer is None or bkg_point_layer is None:
-            return None
-
-        frg_points: list[tuple[tuple[int, int], int]] = []
-        for p in frg_point_layer.data:
-            x, y = p[1], p[0]
-            frg_points.append(((x, y), 1))
-
-        bkg_points: list[tuple[tuple[int, int], int]] = []
-        for p in bkg_point_layer.data:
-            x, y = int(p[1]), int(p[0])
-            bkg_points.append(((x, y), 0))
-
-        return frg_points, bkg_points
-
-    def _get_point_layers(
-        self, layer_name: str
-    ) -> tuple[napari.layers.Points | None, napari.layers.Points | None]:
-        """Get the correct points layers from the viewer."""
-        frg_point_layer = None
-        bkg_point_layer = None
-
-        for layer in self._viewer.layers:
-            if (
-                isinstance(layer, napari.layers.Points)
-                and layer.metadata.get("id") == layer_name
-                and layer.metadata.get("prompt") == POINTS
-            ):
-                if layer.metadata.get("type") == 1:
-                    frg_point_layer = layer
-                elif layer.metadata.get("type") == 0:
-                    bkg_point_layer = layer
-
-        return frg_point_layer, bkg_point_layer
-
-    def _get_boxes_coordinates(
-        self, layer_name: str
-    ) -> list[tuple[int, int, int, int]] | None:
-        """Get the box coordinates from the Shapes layer."""
-        boxes_layer = self._get_shapes_layers(layer_name)
-
-        if boxes_layer is None:
-            return None
-
-        box_coords: list[tuple[int, int, int, int]] = []
-        for box in boxes_layer.data:
-            top_left, _, bottom_right, _ = box
-            # round the coordinates
-            top_left = (int(top_left[1]), int(top_left[0]))
-            bottom_right = (int(bottom_right[1]), int(bottom_right[0]))
-            box_coords.append((*top_left, *bottom_right))
-
-        return box_coords or None
-
-    def _get_shapes_layers(self, layer_name: str) -> napari.layers.Shapes | None:
-        """Get the correct shapes layer from the viewer."""
-        for layer in self._viewer.layers:
-            if (
-                isinstance(layer, napari.layers.Shapes)
-                and layer.metadata.get("id") == layer_name
-                and layer.metadata.get("prompt") == BOXES
-            ):
-                return layer
-        return None
-
-    def _predict_worker(
-        self,
-        predictor_prompt: str,  # POINTS | BOXES
-        layer_name: str,
-        prompts: (
-            tuple[list[tuple[tuple[int, int], int]], list[tuple[tuple[int, int], int]]]
-            | list[tuple[int, int, int, int]]
-            | None
-        ),
-        predictor_type: str,  # STANDARD | LOOP
-    ) -> None:
+    def _predict_worker(self, mode: str, prompts: np.ndarray) -> None:
         """Run the prediction in another thread."""
-        if prompts is None or self._predictor is None:
+        if self._predictor is None:
             return
 
         self._enable_all(False)
 
-        if predictor_prompt == POINTS:
-            foreground_points, background_points = prompts
-            create_worker(
-                self._predict_with_points,
-                predictor_type=predictor_type,
-                layer_name=layer_name,
-                foreground_points=foreground_points,
-                background_points=background_points,
-                _start_thread=True,
-                _connect={
-                    "yielded": self._display_labels_predictor,
-                    "finished": self._on_predict_finished,
-                },
-            )
-        elif predictor_prompt == BOXES:
-            create_worker(
-                self._predict_with_boxes,
-                predictor_type=predictor_type,
-                layer_name=layer_name,
-                boxes=prompts,
-                _start_thread=True,
-                _connect={
-                    "yielded": self._display_labels_predictor,
-                    "finished": self._on_predict_finished,
-                },
-            )
+        create_worker(
+            self._predict_with_prompts,
+            mode=mode,
+            prompts=prompts,
+            _start_thread=True,
+            _connect={
+                "yielded": self._display_labels_predictor,
+                "finished": self._on_predict_finished,
+            },
+        )
+
+    def _predict_with_prompts(
+        self, mode: str, prompts: np.ndarray
+    ) -> Generator[tuple[list[np.ndarray], list[float], str], None, None]:
+        try:
+            self._predictor = cast(SamPredictor, self._predictor)
+
+            store = self._stored_info[self._current_image][PREDICTOR][mode]
+
+            if mode == POINTS:
+                masks, scores = self._predict_with_points(prompts, store)
+            elif mode == BOXES:
+                masks, scores = self._predict_with_boxes(prompts, store)
+
+            self._success = True
+
+            yield masks, scores, mode
+
+        except Exception as e:  # be more specific
+            self._success = False
+            logging.exception(e)
+            yield [], [], ""
 
     def _predict_with_points(
-        self,
-        predictor_type: str,  # STANDARD | LOOP
-        layer_name: str,
-        foreground_points: list[tuple[tuple[int, int], int]],
-        background_points: list[tuple[tuple[int, int], int]],
-    ) -> Generator[tuple[str, list[np.ndarray], list[float], str], None, None]:
-        """Run the SamPredictor."""
-        try:
-            # image = self._convert_image_to_8bit(layer_name)
-            # self._predictor = cast(SamPredictor, self._predictor)
-            # self._predictor.set_image(image)
-
-            if predictor_type == STANDARD:
-                masks, scores = self._standard_points_predictor(
-                    foreground_points, background_points
-                )
-            elif predictor_type == LOOP:
-                masks, scores = self._loop_points_predictor(foreground_points)
-
-            self._success = True
-
-            yield layer_name, masks, scores, predictor_type
-        except Exception as e:
-            self._success = False
-            logging.exception(e)
-
-    def _standard_points_predictor(
-        self,
-        foreground_points: list[tuple[tuple[int, int], int]],
-        background_points: list[tuple[tuple[int, int], int]],
+        self, prompts: np.ndarray, store: dict
     ) -> tuple[list[np.ndarray], list[float]]:
-        """The Standard SAM Predictor.
+        """Run the predictor with points as prompts.
 
-        Feed foreground and background points to the predictor in a list and get the
-        masks and scores.
+        The difference between the if/else block is the way the prompts are passed to
+        the predictor. In the first case, a single point is passed since it is the last
+        point that was added. This will result in a faster run of the predictor. In the
+        second case, all the points are passed to the predictor, because either all or
+        some of the points were removed. So we need to re-run the predictor with the new
+        prompts.
         """
-        try:
-            self._predictor = cast(SamPredictor, self._predictor)
-            input_point = [point for point, _ in foreground_points] + [
-                bg_points for bg_points, _ in background_points
-            ]
-            input_label = [label for _, label in foreground_points] + [
-                bg_label for _, bg_label in background_points
-            ]
-
-            masks, score, _ = self._predictor.predict(
-                point_coords=np.array(input_point),
-                point_labels=np.array(input_label),
+        self._predictor = cast(SamPredictor, self._predictor)
+        if len(prompts) == 1:
+            masks, scores, _ = self._predictor.predict(
+                point_coords=np.array(prompts),
+                point_labels=np.array([1]),  # prompt is always 1 point
                 multimask_output=False,
             )
-            self._success = True
-        except Exception as e:
-            self._success = False
-            logging.exception(e)
-            return [], []
+            store[MASKS].append(masks)
+            store[SCORES].append(scores)
 
-        return masks, score
-
-    def _loop_points_predictor(
-        self, foreground_points: list[tuple[tuple[int, int], int]]
-    ) -> tuple[list[np.ndarray], list[float]]:
-        """The Loop SAM Predictor.
-
-        Feed each foreground point to the predictor individually and get the masks and
-        scores for each point.
-        """
-        try:
-            self._predictor = cast(SamPredictor, self._predictor)
-            masks: list[np.ndarray] = []
-            scores: list[float] = []
-            for point, label in foreground_points:
+        else:
+            # should be triggered when the user removes prompt
+            masks, scores = [], []
+            for prompt in prompts:
                 mask, score, _ = self._predictor.predict(
-                    point_coords=np.array([point]),
-                    point_labels=np.array([label]),
+                    point_coords=np.array([prompt]),
+                    point_labels=np.array([1]),  # prompt is always 1 point
                     multimask_output=False,
                 )
                 masks.append(mask)
                 scores.append(score)
-            self._success = True
-        except Exception as e:
-            self._success = False
-            logging.exception(e)
-            return [], []
+            store[MASKS] = masks
+            store[SCORES] = scores
+
+        self._stored_info[self._current_image][PREDICTOR][POINTS] = store
 
         return masks, scores
 
     def _predict_with_boxes(
-        self,
-        predictor_type: str,  # STANDARD | LOOP
-        layer_name: str,
-        boxes: list[tuple[int, int, int, int]],
-    ) -> Generator[tuple[str, list[np.ndarray], list[float], str], None, None]:
-        """Run the SamPredictor."""
-        try:
-            # image = self._convert_image_to_8bit(layer_name)
-            # self._predictor = cast(SamPredictor, self._predictor)
-            # self._predictor.set_image(image)
+        self, prompts: np.ndarray, store: dict
+    ) -> tuple[np.ndarray, list[float]]:
+        """Run the predictor with boxes as prompts.
 
-            if predictor_type == LOOP:
-                masks, scores = self._loop_boxes_predictor(boxes)
-
-            self._success = True
-
-            yield layer_name, masks, scores, predictor_type
-        except Exception as e:
-            self._success = False
-            logging.exception(e)
-
-    def _loop_boxes_predictor(
-        self, boxes: list[tuple[int, int, int, int]]
-    ) -> tuple[list[np.ndarray], list[float]]:
-        """The Standard SAM Predictor.
-
-        Feed boxes to the predictor in a list and get the masks and scores.
+        The difference between the if/else block is the way the prompts are passed to
+        the predictor. In the first case, a single box is passed since it is the last
+        box that was added. This will result in a faster run of the predictor. In the
+        second case, all the boxes are passed to the predictor, because either all or
+        some of the boxes were removed. So we need to re-run the predictor with the new
+        prompts.
         """
-        try:
-            self._predictor = cast(SamPredictor, self._predictor)
-            masks: list[np.ndarray] = []
-            scores: list[float] = []
-            for box in boxes:
+        self._predictor = cast(SamPredictor, self._predictor)
+        if len(prompts) == 1:
+            masks, scores, _ = self._predictor.predict(
+                box=np.array([prompts]), multimask_output=False
+            )
+            store[MASKS].append(masks)
+            store[SCORES].append(scores)
+        else:
+            # should be triggered when the user removes prompt
+            masks, scores = [], []
+            for prompt in prompts:
                 mask, score, _ = self._predictor.predict(
-                    box=np.array(box), multimask_output=False
+                    box=np.array([prompt]), multimask_output=False
                 )
                 masks.append(mask)
                 scores.append(score)
+            store[MASKS] = masks
+            store[SCORES] = scores
 
-            self._success = True
-        except Exception as e:
-            self._success = False
-            logging.exception(e)
-            return [], []
+        self._stored_info[self._current_image][PREDICTOR][BOXES] = store
 
         return masks, scores
 
@@ -804,26 +824,47 @@ class SamPromptWidget(QWidget):
             self._info_lbl.setText("Error while running the Predictor!")
             logging.error("Error while running the Predictor!")
 
+        if self._console:
+            self._console.push({"info": self._stored_info})
+
     @ensure_main_thread  # type: ignore [misc]
     def _display_labels_predictor(
-        self, args: tuple[str, list[np.ndarray], list[float], str]
+        self, args: tuple[list[np.ndarray], list[float], str]
     ) -> None:
         """Display the masks as labels in the viewer."""
-        layer_name, masks, scores, predictor_type = args
+        masks, _, mode = args
+        layer_name = self._current_image
 
-        if self._console:
-            self._console.push({"masks": masks, "scores": scores})
+        name = f"{layer_name}_LABELS [{mode.upper()}]"
 
-        name = f"{layer_name}_labels[{predictor_type}]"
+        stored = self._stored_info.get(layer_name)
+        if stored is None:
+            # first time
+            self._viewer.add_labels(masks, name=name, metadata={"id": layer_name})
+        else:
+            stored_masks = stored[PREDICTOR][mode][MASKS]
 
-        if len(masks) == 1:
-            labeled_mask = measure.label(masks[0])
-            self._viewer.add_labels(labeled_mask, name=name)
-            return
+            if len(stored_masks) == 0:
+                return
 
+            mask_for_labels = self._masks_for_labels(stored_masks)
+            try:
+                labels = cast(napari.layers.Labels, self._viewer.layers[name])
+                labels.data = mask_for_labels
+            except KeyError:
+                self._viewer.add_labels(
+                    mask_for_labels, name=name, metadata={"id": layer_name}
+                )
+
+        # keep the prompt layer as the active layer
+        prompt_layer = self._viewer.layers[f"{layer_name} [{mode.upper()}]"]
+        self._viewer.layers.selection.active = prompt_layer
+
+    def _masks_for_labels(self, masks: list[np.ndarray]) -> np.ndarray:
+        """Create the mask data to be used in the labels layer."""
         final_mask = np.zeros_like(masks[0], dtype=np.int32)
         for mask in masks:
             labeled_mask = measure.label(mask)
             labeled_mask[labeled_mask != 0] += final_mask.max()
             final_mask += labeled_mask
-        self._viewer.add_labels(final_mask, name=name)
+        return final_mask
