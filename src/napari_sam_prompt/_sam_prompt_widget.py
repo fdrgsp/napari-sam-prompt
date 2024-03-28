@@ -272,6 +272,9 @@ class SamPromptWidget(QWidget):
         img_8bit = np.stack((img_8bit, img_8bit, img_8bit), axis=-1)
         return img_8bit
 
+
+
+
     # ========================MODEL=========================
 
     def _browse_model(self) -> None:
