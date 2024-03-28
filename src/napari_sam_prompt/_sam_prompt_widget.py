@@ -174,36 +174,15 @@ class SamPromptWidget(QWidget):
     def _convert_image(self, layer_name: str) -> np.ndarray:
         """Convert the image to 8-bit and stack to 3 channels."""
         # TODO: Handle already 8-bit, rgb images + stacks
-        layer = cast(napari.layers.Image, self._viewer.layers[layer_name])
+         layer = cast(napari.layers.Image, self._viewer.layers[layer_name])
         data = layer.data
         # Normalize to the range 0-1
-        img_8bit = self._convert_8bit(data)
+        img_normalized = data / np.max(data)
+        # Scale to 8-bit (0-255)
+        img_8bit = (img_normalized * 255).astype(np.uint8)
         # Stack the image three times to create a 3-channel image
-        img = self._convert_to_three_channels(img_8bit)
-
-        return img
-    
-    def _convert_8bit(self, data):
-        '''Convert image to 8-bit'''
-        return (255*(data-data.min())/(data.max()-data.min())).astype('uint8')
-    
-    def _convert_to_three_channels(self, data):
-        '''Convert image to 3-channel image'''
-        if len(data.shape)==3:
-            channels = data.shape[-1]
-        else:
-            channels = 1
-
-        if channels==1:
-            return np.stack([image] * 3, axis=-1)
-        elif channels==2:
-            avg_channels = np.mean(data, axis=-1, keepdims=True)
-            return np.concatenate([data, avg_channels], axis=-1)
-        elif channels==3:
-            return data
-        else:
-            avg_channels = np.mean(data, axis=-1, keepdims=True)
-            return np.stack([avg_channels] * 3, axis=-1)
+        img_8bit = np.stack((img_8bit, img_8bit, img_8bit), axis=-1)
+        return img_8bit
     
 
 
