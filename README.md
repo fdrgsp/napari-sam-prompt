@@ -1,4 +1,4 @@
-# napari-sam-prompt
+# napari-sam-prompt [WIP]
 
 [![License BSD-3](https://img.shields.io/pypi/l/napari-sam-prompt.svg?color=green)](https://github.com/fdrgsp/napari-sam-prompt/raw/main/LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/napari-sam-prompt.svg?color=green)](https://pypi.org/project/napari-sam-prompt)
@@ -8,6 +8,13 @@
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/napari-sam-prompt)](https://napari-hub.org/plugins/napari-sam-prompt)
 
 A napari plugin that implements SAM prompts predictor
+
+
+
+https://github.com/fdrgsp/napari-sam-prompt/assets/70725613/a903b588-28f9-4848-b2f5-58e62e77bcf4
+
+
+
 
 ----------------------------------
 
