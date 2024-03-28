@@ -183,7 +183,7 @@ class SamPromptWidget(QWidget):
         # Stack the image three times to create a 3-channel image
         img_8bit = np.stack((img_8bit, img_8bit, img_8bit), axis=-1)
         return img_8bit
-    
+
 
 
 
