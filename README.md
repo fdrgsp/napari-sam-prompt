@@ -9,6 +9,10 @@
 
 A napari plugin that implements SAM prompts predictor
 
+
+https://github.com/fdrgsp/napari-sam-prompt/assets/70725613/3bee3d2f-7197-4d97-a4c0-21dfed2fba1b
+
+
 ----------------------------------
 
 ## Installation
