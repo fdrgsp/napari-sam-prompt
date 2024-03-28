@@ -174,7 +174,7 @@ class SamPromptWidget(QWidget):
     def _convert_image(self, layer_name: str) -> np.ndarray:
         """Convert the image to 8-bit and stack to 3 channels."""
         # TODO: Handle already 8-bit, rgb images + stacks
-         layer = cast(napari.layers.Image, self._viewer.layers[layer_name])
+        layer = cast(napari.layers.Image, self._viewer.layers[layer_name])
         data = layer.data
         # Normalize to the range 0-1
         img_normalized = data / np.max(data)
