@@ -1,4 +1,4 @@
-# napari-sam-prompt
+# napari-sam-prompt [WIP]
 
 [![License BSD-3](https://img.shields.io/pypi/l/napari-sam-prompt.svg?color=green)](https://github.com/fdrgsp/napari-sam-prompt/raw/main/LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/napari-sam-prompt.svg?color=green)](https://pypi.org/project/napari-sam-prompt)
