@@ -160,6 +160,7 @@ class SamPromptWidget(QWidget):
         # add automatic segmentation
         self._automatic_seg_group = AutoMaskGeneratorWidget()
         self._automatic_seg_group.generateSignal.connect(self._on_generate)
+        self._automatic_seg_group.filterSignal.connect(self._on_filter)
 
         # add predictor widget
         self._predictor_widget = PredictorWidget()
@@ -170,6 +171,7 @@ class SamPromptWidget(QWidget):
         _info_group_layout = QVBoxLayout(_info_group)
         self._load_info_lbl = QLabel("Model not loaded.")
         self._info_lbl = QLabel()
+        self._info_lbl.setWordWrap(True)
         _info_group_layout.addWidget(self._load_info_lbl)
         _info_group_layout.addWidget(self._info_lbl)
 
@@ -190,6 +192,9 @@ class SamPromptWidget(QWidget):
         self._viewer.layers.selection.events.changed.connect(self._on_layer_selected)
 
         self._enable_widgets(False)
+
+        if model_checkpoint and model_type:
+            self._on_load()
 
     def _enable_widgets(self, state: bool) -> None:
         """Enable or disable the widget."""
@@ -293,6 +298,9 @@ class SamPromptWidget(QWidget):
         self._load_info_lbl.setText("Loading model...")
         logging.info("Loading model...")
 
+        self._load_module_btn.setEnabled(False)
+        self._model_browse_btn.setEnabled(False)
+
         self._load_worker(model_checkpoint, model_type)
 
     def _load_worker(self, model_checkpoint: str, model_type: str) -> None:
@@ -310,15 +318,19 @@ class SamPromptWidget(QWidget):
         if loaded:
             self._enable_widgets(True)
             _loaded_status = f"Model loaded successfully.\nUsing: {self._device}"
-            logging.info("Model loaded successfully.")
+            logging.info(_loaded_status)
         else:
             self._enable_widgets(False)
             _loaded_status = "Error while loading model!"
             self._sam = None
             self._predictor = None
-            logging.error("Error while loading model!")
+            logging.error(_loaded_status)
 
         self._load_info_lbl.setText(_loaded_status)
+
+    def _on_loaded_finished(self) -> None:
+        self._load_module_btn.setEnabled(True)
+        self._model_browse_btn.setEnabled(True)
 
         if self._console:
             self._console.push({"sam": self._sam, PREDICTOR: self._predictor})
@@ -445,32 +457,70 @@ class SamPromptWidget(QWidget):
         if self._console:
             self._console.push({"info": self._stored_info})
 
-        segmented: list[np.ndarray] = [
-            mask["segmentation"]
-            for mask in masks
-            if (
-                mask["area"] >= self._automatic_seg_group._min_area.value()
-                and mask["area"] <= self._automatic_seg_group._max_area.value()
-            )
-        ]
+        final_mask = self._filter_by_area_and_update_labels(masks)
 
-        # name = f"{layer_name}_masks[Automatic]"
-        # # create a stack
-        # stack = np.stack(segmented, axis=0)
-        # self._viewer.add_image(stack, name=name, blending="additive")
-
-        name = f"{layer_name}_labels[Automatic]"
-        final_mask = np.zeros_like(segmented[0], dtype=np.int32)
-        for mask in segmented:
-            labeled_mask = measure.label(mask)
-            labeled_mask[labeled_mask != 0] += final_mask.max()
-            final_mask += labeled_mask
-
+        name = f"{layer_name}_labels [Automatic]"
         try:
             labels = cast(napari.layers.Labels, self._viewer.layers[name])
             labels.data = final_mask
         except KeyError:
             self._viewer.add_labels(final_mask, name=name, metadata={"id": layer_name})
+
+    def _filter_by_area_and_update_labels(self, masks: list[np.ndarray]) -> np.ndarray:
+        """Filter the masks by area and update the data for the labels layer."""
+        # filter the masks by area
+        filtered_masks = self._filter_mask_by_area(masks)
+        if len(filtered_masks) == 0:
+            msg = "No masks found. Adjust the area filter."
+            self._info_lbl.setText(msg)
+            logging.info(msg)
+            return
+
+        # update the labels layer with the filtered masks
+        filtered_for_labels = np.zeros_like(filtered_masks[0], dtype=np.int32)
+        for mask in filtered_masks:
+            labeled_mask = measure.label(mask)
+            labeled_mask[labeled_mask != 0] += filtered_for_labels.max()
+            filtered_for_labels += labeled_mask
+
+        return filtered_for_labels
+
+    def _filter_mask_by_area(self, masks: list[np.ndarray]) -> list[np.ndarray]:
+        """Filter the masks by area."""
+        min_area, max_area = self._automatic_seg_group.value()
+        return [
+            mask["segmentation"]
+            for mask in masks
+            if (mask["area"] >= min_area and mask["area"] <= max_area)
+        ]
+
+    def _on_filter(self) -> None:
+        """Filter the masks by area and display the labels."""
+        labels_name = f"{self._current_image}_labels [Automatic]"
+        try:
+            labels_layer = cast(napari.layers.Labels, self._viewer.layers[labels_name])
+        except KeyError:
+            msg = "No Label Layer found. Run the `Automatic Mask Generator` first."
+            self._info_lbl.setText(msg)
+            logging.info(msg)
+            return
+
+        masks = self._stored_info.get(self._current_image, {}).get(AUTO_MASK, [])
+        if not masks:
+            msg = (
+                "No masks found. Run the `Automatic Mask Generator first or adjust the "
+                "area filter parameters."
+            )
+            self._info_lbl.setText(msg)
+            logging.info(msg)
+            return
+
+        # filter the masks by area
+        filtered_masks = self._filter_by_area_and_update_labels(masks)
+
+        # clear the labels layer
+        labels_layer.data = np.zeros_like(labels_layer.data)
+        labels_layer.data = filtered_masks
 
     # ====================SET IMAGE TO PREDICTOR====================
 
