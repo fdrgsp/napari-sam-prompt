@@ -271,8 +271,8 @@ class SamPromptWidget(QWidget):
 
         return data_8bit.astype("uint8")
 
-    def _convert_8bit(self, data):
-        """Convert image to 8-bit"""
+    def _convert_8bit(self, data: np.ndarray) -> np.ndarray:
+        """Convert image to 8-bit."""
         for i in range(3):
             temp_data = data[:, :, i]
             data[:, :, i] = (
@@ -281,14 +281,9 @@ class SamPromptWidget(QWidget):
             ).astype("uint8")
         return data
 
-    def _convert_to_three_channels(self, data):
-        """Convert image to 3-channel image"""
-        if len(data.shape) == 3:
-            print("The image has 3 channels")
-            channels = data.shape[-1]
-        else:
-            channels = 1
-
+    def _convert_to_three_channels(self, data: np.ndarray) -> np.ndarray:
+        """Convert the image to 3 channels."""
+        channels = data.shape[-1] if len(data.shape) == 3 else 1
         if channels == 1:
             return np.stack([data] * 3, axis=-1)
         elif channels == 2:
