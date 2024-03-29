@@ -88,6 +88,9 @@ class SamPromptWidget(QWidget):
         self._sam: Sam | None = None
         self._predictor: SamPredictor | None = None
         self._mask_generator: SamAutomaticMaskGenerator | None = None
+        self._model_checkpoint: str = model_checkpoint
+        self._model_type: str = model_type
+
         self._current_image: str = ""
 
         self._setting_image: bool = False
@@ -95,9 +98,17 @@ class SamPromptWidget(QWidget):
         # this is to store all the info form the automatic mask generator and the
         # predictor. This is added to the napari console so we can check the info
         # TODO: maybe use dataclass
-        self._stored_info: dict[str, dict[str, Any]] = {}
+        self._stored_info: dict[str, dict[str, Any]] = {
+            "model": {
+                "model_checkpoint": self._model_checkpoint,
+                "model_type": self._model_type,
+            }
+        }
         # =========================STRUCTURE==========================
         # self._stored_info = {
+        #     "model": {
+        #           "model_checkpoint": "path/to/model.pth",
+        #           "model_type": "model_type",
         #     "image_name": {
         #         AUTO_MASK: list[dict[str, Any]],
         #         PREDICTOR: {
@@ -128,11 +139,11 @@ class SamPromptWidget(QWidget):
 
         _model_lbl = QLabel("Model Path:")
         _model_lbl.setSizePolicy(FIXED)
-        self._model_le = QLineEdit(text=model_checkpoint)
+        self._model_le = QLineEdit(text=self._model_checkpoint)
 
         _model_type_lbl = QLabel("Model Type:")
         _model_type_lbl.setSizePolicy(FIXED)
-        self._model_type_le = QLineEdit(text=model_type)
+        self._model_type_le = QLineEdit(text=self._model_type)
 
         self._model_browse_btn = QPushButton("Browse")
         self._model_browse_btn.setSizePolicy(FIXED)
@@ -196,6 +207,9 @@ class SamPromptWidget(QWidget):
         if model_checkpoint and model_type:
             self._on_load()
 
+        if self._console:
+            self._console.push({"info": self._stored_info})
+
     def _enable_widgets(self, state: bool) -> None:
         """Enable or disable the widget."""
         self._layer_group.setEnabled(state)
@@ -224,9 +238,6 @@ class SamPromptWidget(QWidget):
             if layer in image_layers:
                 continue
             self._stored_info.pop(layer, None)
-            # update info in the console
-            if self._console:
-                self._console.push({"info": self._stored_info})
             # delete any associated layers
             for _layer in list(self._viewer.layers):
                 if _layer.metadata.get("id") == layer:
@@ -316,6 +327,10 @@ class SamPromptWidget(QWidget):
     def _update_info(self, loaded: bool) -> None:
         """Update the info label."""
         if loaded:
+            self._stored_info["model"] = {
+                "model_checkpoint": self._model_checkpoint,
+                "model_type": self._model_type,
+            }
             self._enable_widgets(True)
             _loaded_status = f"Model loaded successfully.\nUsing: {self._device}"
             logging.info(_loaded_status)
@@ -341,6 +356,8 @@ class SamPromptWidget(QWidget):
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
         try:
+            self._model_checkpoint = model_checkpoint
+            self._model_type = model_type
             self._sam = sam_model_registry[model_type](checkpoint=model_checkpoint)
         except Exception as e:  # be more specific
             self._sam = None
@@ -453,9 +470,6 @@ class SamPromptWidget(QWidget):
     def _display_labels_auto_segmentation(self, masks: list[np.ndarray]) -> None:
         """Display the masks in a stack."""
         layer_name = self._current_image
-
-        if self._console:
-            self._console.push({"info": self._stored_info})
 
         final_mask = self._filter_by_area_and_update_labels(masks)
 
@@ -874,9 +888,6 @@ class SamPromptWidget(QWidget):
         else:
             self._info_lbl.setText("Error while running the Predictor!")
             logging.error("Error while running the Predictor!")
-
-        if self._console:
-            self._console.push({"info": self._stored_info})
 
     @ensure_main_thread  # type: ignore [misc]
     def _display_labels_predictor(
