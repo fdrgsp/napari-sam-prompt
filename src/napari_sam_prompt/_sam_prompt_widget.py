@@ -333,7 +333,6 @@ class SamPromptWidget(QWidget):
             avg_channels = np.mean(data_8bit, axis=-1, dtype="uint8")
             return np.stack([avg_channels] * 3, axis=-1)
 
-
     # ========================MODEL=========================
 
     def _browse_model(self) -> None:
