@@ -19,7 +19,7 @@ dependencies = [
     "napari >=0.4.19",
     "numpy",
     "qtpy",
-    "cv2"
+    "opencv-python"
 ]
 
 # extras
