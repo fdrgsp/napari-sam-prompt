@@ -278,7 +278,6 @@ class SamPromptWidget(QWidget):
 
     def _convert_image(self, layer_name: str) -> np.ndarray:
         """Convert the image to 8-bit and stack to 3 channels."""
-        # TODO: Handle already 8-bit, rgb images + stacks
         layer = cast(napari.layers.Image, self._viewer.layers[layer_name])
         data = layer.data
         # Normalize to the range 0-1
@@ -288,19 +287,18 @@ class SamPromptWidget(QWidget):
 
         return data_8bit.astype("uint8")
 
-    def _convert_8bit(self, data):
-        """Convert image to 8-bit"""
+    def _convert_8bit(self, data: np.ndarray) -> np.ndarray:
+        """Convert image to 8-bit."""
         data = (255 * ((data - data.min()) / (data.max() - data.min()))).astype("uint8")
         return data
 
-    def _convert_to_three_channels(self, data):
-        """Convert image to 3-channel image"""
+    def _convert_to_three_channels(self, data: np.ndarray) -> np.ndarray:
+        """Convert the image to 3 channels."""
         if len(data.shape) == 3:
             # Convert the image from CHW to HWC dimension
             ch_loc = np.argmin(data.shape)
             if ch_loc == 0:
                 data = np.transpose(data, (1, 2, 0))
-
             channels = data.shape[-1]
         else:
             channels = 1
