@@ -29,7 +29,7 @@ test = [
     "pytest-cov",
     "pytest-qt",
     "torch",
-    "segmentat_anything @ git+https://github.com/facebookresearch/segment-anything.git"
+    "segment_anything @ git+https://github.com/facebookresearch/segment-anything.git"
 ]
 pyqt5 = ["PyQt5"]
 pyqt6 = ["PyQt6"]
