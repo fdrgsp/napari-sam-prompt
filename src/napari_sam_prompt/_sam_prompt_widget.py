@@ -308,7 +308,8 @@ class SamPromptWidget(QWidget):
         elif channels == 3:
             return data
         else:
-            avg_channels = np.mean(data, axis=-1, keepdims=True)
+            avg_channels = np.mean(data, axis=-1)
+            return np.stack([avg_channels] * 3, axis=-1)
             return np.stack([avg_channels] * 3, axis=-1)
 
     # ========================MODEL=========================
