@@ -45,6 +45,9 @@ class PredictorWidget(QGroupBox):
     def mode(self) -> str:
         return str(self._mode_combo.currentText())
 
+    def setMode(self, mode: str) -> None:
+        self._mode_combo.setCurrentText(mode)
+
     def _on_add_layers(self) -> None:
         """Emit the `addLayersSignal` with the current widget value."""
         self.addLayersSignal.emit(self.mode())

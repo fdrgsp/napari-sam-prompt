@@ -17,6 +17,7 @@ from qtpy.QtWidgets import (
 from superqt import QCollapsible
 
 FIXED = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+EXPANDING_VERTICAL = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
 
 class AutoMaskGeneratorWidget(QGroupBox):
@@ -124,9 +125,7 @@ class AutoMaskGeneratorWidget(QGroupBox):
         _filer_layout = QHBoxLayout(_filer_group)
         self._min_max_wdg = AreaFilterWidget()
         self._filter_btn = QPushButton("Filter")
-        self._filter_btn.setSizePolicy(
-            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
-        )
+        self._filter_btn.setSizePolicy(EXPANDING_VERTICAL)
         self._filter_btn.clicked.connect(self._on_filter)
         _filer_layout.addWidget(self._min_max_wdg)
         _filer_layout.addWidget(self._filter_btn)

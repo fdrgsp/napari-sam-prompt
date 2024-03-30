@@ -10,13 +10,10 @@ import numpy as np
 import torch
 from qtpy.QtWidgets import (
     QComboBox,
-    QFileDialog,
     QGridLayout,
     QGroupBox,
     QLabel,
-    QLineEdit,
     QMessageBox,
-    QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -25,14 +22,17 @@ from segment_anything import SamAutomaticMaskGenerator, SamPredictor, sam_model_
 from skimage import measure
 from superqt.utils import create_worker, ensure_main_thread
 
-from napari_sam_prompt._sub_widgets._auto_mask_generator import AutoMaskGeneratorWidget
+from napari_sam_prompt._sub_widgets._auto_mask_generator_widget import (
+    AutoMaskGeneratorWidget,
+)
+from napari_sam_prompt._sub_widgets._load_model_widget import LoadModelWidget
 from napari_sam_prompt._sub_widgets._predictor_widget import (
     BOXES,
     POINTS,
     PredictorWidget,
 )
 
-from ._util import _convert_8bit, _convert_to_three_channels
+from ._util import _convert_image
 
 if TYPE_CHECKING:
     from napari.utils.events import Event
@@ -40,7 +40,6 @@ if TYPE_CHECKING:
 
 
 FIXED = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-EXTENDED = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
 AUTO_MASK = "auto_mask_generator"
 PREDICTOR = "predictor"
@@ -134,31 +133,10 @@ class SamPromptWidget(QWidget):
         self._success = False
 
         # Add the model groupbox
-        self._model_group = QGroupBox("SAM Model Checkpoint")
-        _model_group_layout = QGridLayout(self._model_group)
-        _model_group_layout.setSpacing(10)
-        _model_group_layout.setContentsMargins(10, 10, 10, 10)
-
-        _model_lbl = QLabel("Model Path:")
-        _model_lbl.setSizePolicy(FIXED)
-        self._model_le = QLineEdit(text=self._model_checkpoint)
-
-        _model_type_lbl = QLabel("Model Type:")
-        _model_type_lbl.setSizePolicy(FIXED)
-        self._model_type_le = QLineEdit(text=self._model_type)
-
-        self._model_browse_btn = QPushButton("Browse")
-        self._model_browse_btn.setSizePolicy(FIXED)
-        self._model_browse_btn.clicked.connect(self._browse_model)
-        self._load_module_btn = QPushButton("Load Selected Model")
-        self._load_module_btn.clicked.connect(self._on_load)
-
-        _model_group_layout.addWidget(_model_lbl, 0, 0)
-        _model_group_layout.addWidget(self._model_le, 0, 1)
-        _model_group_layout.addWidget(self._model_browse_btn, 0, 2)
-        _model_group_layout.addWidget(_model_type_lbl, 1, 0)
-        _model_group_layout.addWidget(self._model_type_le, 1, 1, 1, 2)
-        _model_group_layout.addWidget(self._load_module_btn, 2, 0, 1, 3)
+        self._model_group = LoadModelWidget(
+            model_checkpoint=self._model_checkpoint, model_type=self._model_type
+        )
+        self._model_group.loadSignal.connect(self._on_load)
 
         # add layer selector groupbox
         self._layer_group = QGroupBox("Layer Selector")
@@ -268,47 +246,35 @@ class SamPromptWidget(QWidget):
             active_layer = cast(napari.layers, e.source.active)
             layer_name = active_layer.name
 
+            prompt_layer = False
             # in case we select a points or shapes layer
             if _id := active_layer.metadata.get("id"):
                 layer_name = _id
+                prompt_layer = True
 
+            # set the correct prompt type in the prompt widget combo
+            if prompt_layer:
+                prompt_type = active_layer.metadata.get("prompt")
+                self._predictor_widget.setMode(prompt_type)
+
+            # set the correct image in the clayer combo
             if self._current_image != layer_name:
                 self._current_image = layer_name
                 self._image_combo.setCurrentText(layer_name)
 
-    def _convert_image(self, layer_name: str) -> np.ndarray:
-        """Convert the image to 8-bit and stack to 3 channels."""
-        layer = cast(napari.layers.Image, self._viewer.layers[layer_name])
-        data = layer.data
-        # Normalize to the range 0-1
-        data_three_channels = _convert_to_three_channels(data)
-        data_8bit = _convert_8bit(data_three_channels)
-        # Stack the image three times to create a 3-channel image
-        return data_8bit.astype("uint8")
-
     # ========================MODEL=========================
-
-    def _browse_model(self) -> None:
-        """Open a file dialog to select the SAM Model Checkpoint."""
-        filename, _ = QFileDialog.getOpenFileName(
-            self, "Select the SAM Model Checkpoint to use.", "", "pth(*.pth)"
-        )
-        if filename:
-            self._model_le.setText(filename)
 
     def _on_load(self) -> None:
         """Load the SAM model."""
         self._sam = None
         self._predictor = None
 
-        model_checkpoint = self._model_le.text()
-        model_type = self._model_type_le.text()
+        model_checkpoint, model_type = self._model_group.value()
 
         self._load_info_lbl.setText("Loading model...")
         logging.info("Loading model...")
 
-        self._load_module_btn.setEnabled(False)
-        self._model_browse_btn.setEnabled(False)
+        self._model_group.setEnabled(False)
 
         self._load_worker(model_checkpoint, model_type)
 
@@ -345,8 +311,7 @@ class SamPromptWidget(QWidget):
         self._load_info_lbl.setText(_loaded_status)
 
     def _on_loaded_finished(self) -> None:
-        self._load_module_btn.setEnabled(True)
-        self._model_browse_btn.setEnabled(True)
+        self._model_group.setEnabled(True)
 
         if self._console:
             self._console.push({"sam": self._sam, PREDICTOR: self._predictor})
@@ -405,7 +370,7 @@ class SamPromptWidget(QWidget):
             self._info_lbl.setText(msg)
             logging.exception(e)
 
-        image = self._convert_image(self._current_image)
+        image = _convert_image(self._viewer.layers[self._current_image])
 
         self._generate_worker(image)
 
@@ -578,16 +543,24 @@ class SamPromptWidget(QWidget):
             logging.info(msg)
             self._set_image_embeddings_to_predictor(image_set, embeddings)
             prompts = layer.data
-            self._on_predict(self._predictor_widget.mode(), prompts)
+            try:
+                self._on_predict(self._predictor_widget.mode(), prompts)
+            except Exception as e:  # be more specific
+                self._enable_all(True)
+                logging.exception(e)
 
         else:
             prompts = layer.data
-            self._on_predict(self._predictor_widget.mode(), prompts)
+            try:
+                self._on_predict(self._predictor_widget.mode(), prompts)
+            except Exception as e:  # be more specific
+                self._enable_all(True)
+                logging.exception(e)
 
     def _image_to_predictor(self) -> None:
         """Set the image to the predictor."""
         try:
-            image = self._convert_image(self._current_image)
+            image = _convert_image(self._viewer.layers[self._current_image])
             self._predictor = cast(SamPredictor, self._predictor)
             self._predictor.set_image(image)
 
@@ -598,6 +571,7 @@ class SamPromptWidget(QWidget):
             self._stored_info[self._current_image][PREDICTOR] = store
 
         except Exception as e:  # be more specific
+            self._enable_all(True)
             logging.exception(e)
             return
 
