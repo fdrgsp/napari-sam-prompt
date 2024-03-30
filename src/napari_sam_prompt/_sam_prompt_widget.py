@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Generator, cast
 import napari.layers
 import napari.viewer
 import numpy as np
+import cv2 as cv
 import torch
 from qtpy.QtWidgets import (
     QComboBox,
