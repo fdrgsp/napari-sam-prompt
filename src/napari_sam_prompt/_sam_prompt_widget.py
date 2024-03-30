@@ -321,7 +321,10 @@ class SamPromptWidget(QWidget):
             model_checkpoint=model_checkpoint,
             model_type=model_type,
             _start_thread=True,
-            _connect={"yielded": self._update_info},
+            _connect={
+                "yielded": self._update_info,
+                "finished": self._on_loaded_finished,
+            },
         )
 
     def _update_info(self, loaded: bool) -> None:
