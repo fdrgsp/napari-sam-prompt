@@ -1,37 +1,24 @@
-from unittest.mock import patch
-
-import napari
 import numpy as np
 import pytest
-from napari_sam_prompt._sam_prompt_widget import SamPromptWidget
-
-
-@pytest.fixture
-def widget():
-    widget = SamPromptWidget(viewer=napari.Viewer())
-    with patch.object(widget, "_console", return_value=None):
-        yield widget
-
+from napari_sam_prompt._util import _convert_8bit, _convert_to_three_channels
 
 data = [
-    # imagenp.ndarray,              x_axis_index,   y_axis_index
+    # imagenp.ndarray, x_axis_index, y_axis_index
     (np.random.rand(100, 100), 0, 1),
-    # (np.random.rand(100, 100, 3),   0,              1),
-    # (np.random.rand(100, 100, 2),   0,              1),
-    # (np.random.rand(100, 100, 6),   0,              1),
-    # (np.random.rand(2, 100, 100),   0,              1),
+    (np.random.rand(100, 100, 3), 0, 1),
+    (np.random.rand(100, 100, 2), 0, 1),
+    (np.random.rand(100, 100, 6), 0, 1),
+    # (np.random.rand(2, 100, 100), 0, 1),
 ]
 
 
 @pytest.mark.parametrize("data", data)
-def test_supported_images(widget: SamPromptWidget, data: tuple[np.ndarray, int, int]):
+def test_supported_images(data: tuple[np.ndarray, int, int]):
     image, idx_x, idx_y = data
 
-    viewer = widget._viewer
-    viewer.add_image(image, name="test_layer")
-
     # Call the method to test
-    result = widget._convert_image("test_layer")
+    three_ch = _convert_to_three_channels(image)
+    result = _convert_8bit(three_ch)
 
     # Check the result
     # The result should have an extra dimension for the 3 channels
