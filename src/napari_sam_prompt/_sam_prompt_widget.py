@@ -234,13 +234,13 @@ class SamPromptWidget(QWidget):
         ]
 
         # remove the layers that are not in the viewer anymore
-        for layer in list(self._stored_info.keys()):
-            if layer in image_layers:
+        for key in list(self._stored_info.keys()):
+            if key in image_layers or key == "model":
                 continue
-            self._stored_info.pop(layer, None)
+            self._stored_info.pop(key, None)
             # delete any associated layers
             for _layer in list(self._viewer.layers):
-                if _layer.metadata.get("id") == layer:
+                if _layer.metadata.get("id") == key:
                     self._viewer.layers.remove(_layer)
 
         # reverse the layers to show the last added layer first
@@ -250,7 +250,6 @@ class SamPromptWidget(QWidget):
         # add any newely added layers to the _stored_info
         for layer in image_layers:
             if layer not in self._stored_info:
-                # self._image_set[layer] = (False, None)
                 self._stored_info[layer] = {
                     AUTO_MASK: [],
                     PREDICTOR: {
