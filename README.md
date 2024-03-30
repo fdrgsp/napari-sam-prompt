@@ -26,10 +26,10 @@ https://github.com/fdrgsp/napari-sam-prompt/assets/70725613/a903b588-28f9-4848-b
 pip install git+https://github.com/fdrgsp/napari-sam-prompt.git
 ```
 
-The plugin also requires a Qt backend. For example run:
+The plugin also requires a Qt backend (at the moment we are testing only `pyqt6`). For example run:
 
 ```bash
-pip install pyqt6  # or any of {pyqt5, pyqt6, pyside2, pyside6}
+pip install pyqt6
 ```
 
 ### Install PyTorch and TorchVision
