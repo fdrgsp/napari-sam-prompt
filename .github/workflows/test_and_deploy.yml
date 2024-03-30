@@ -43,7 +43,7 @@ jobs:
       - name: Test
         uses: GabrielBB/xvfb-action@v1
         with:
-          run: python -m pytest -v --color=yes --cov=napari_micromanager --cov-report=xml
+          run: python -m pytest -v --color=yes --cov=napari_sam_prompt --cov-report=xml
 
       - name: Coverage
         uses: codecov/codecov-action@v4
