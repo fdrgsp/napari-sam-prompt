@@ -24,11 +24,18 @@ dependencies = [
 # extras
 # https://peps.python.org/pep-0621/#dependencies-optional-dependencies
 [project.optional-dependencies]
-test = ["pytest", "pytest-cov", "pytest-qt"]
-pyqt5 = ["PyQt5"]
+test = [
+    "pytest",
+    "pytest-cov",
+    "pytest-qt",
+    "torch",
+    "torchvision",
+    "segment_anything @ git+https://github.com/facebookresearch/segment-anything.git"
+]
 pyqt6 = ["PyQt6"]
-pyside2 = ["PySide2"]
-pyside6 = ["PySide6"]
+# pyqt5 = ["PyQt5"]
+# pyside2 = ["PySide2"]
+# pyside6 = ["PySide6"]
 dev = ["isort", "mypy", "pre-commit", "ruff"]
 docs = ["mkdocs-material", "mkdocstrings-python"]
 
@@ -48,6 +55,9 @@ source = "vcs"
 
 [tool.hatch.build.targets.sdist]
 include = ["/src", "/tests"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 # https://beta.ruff.rs/docs/rules/
 [tool.ruff]

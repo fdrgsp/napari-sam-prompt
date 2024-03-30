@@ -1,8 +1,11 @@
-from qtpy.QtCore import Signal
+from __future__ import annotations
+
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -23,12 +26,14 @@ class AutoMaskGeneratorWidget(QGroupBox):
     """
 
     generateSignal = Signal()
+    filterSignal = Signal(object)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
 
         self.setTitle("SAM Automatic Mask Generator")
 
+        # Options
         _points_per_side_lbl = QLabel("Points per side:")
         self._points_per_side = QSpinBox()
         self._points_per_side.setValue(32)
@@ -76,16 +81,6 @@ class AutoMaskGeneratorWidget(QGroupBox):
         _output_mode_lbl = QLabel("Output Mode:")
         self._output_mode = QLineEdit(text="binary_mask")
 
-        _min_area_lbl = QLabel("Minimum Area:")
-        self._min_area = QSpinBox()
-        self._min_area.setMaximum(1000000)
-        self._min_area.setValue(100)
-
-        _max_area_lbl = QLabel("Maximum Area:")
-        self._max_area = QSpinBox()
-        self._max_area.setMaximum(1000000)
-        self._max_area.setValue(10000)
-
         _options_wdg = QWidget()
         _options_wdg_layout = QGridLayout(_options_wdg)
 
@@ -113,20 +108,75 @@ class AutoMaskGeneratorWidget(QGroupBox):
         _options_wdg_layout.addWidget(self._min_mask_region_area, 10, 1)
         _options_wdg_layout.addWidget(_output_mode_lbl, 11, 0)
         _options_wdg_layout.addWidget(self._output_mode, 11, 1)
-        _options_wdg_layout.addWidget(_min_area_lbl, 12, 0)
-        _options_wdg_layout.addWidget(self._min_area, 12, 1)
-        _options_wdg_layout.addWidget(_max_area_lbl, 13, 0)
-        _options_wdg_layout.addWidget(self._max_area, 13, 1)
 
+        # collapsible for options
+        _collapsible = QCollapsible("Options")
+        _collapsible.layout().setContentsMargins(0, 0, 0, 0)
+        _collapsible.layout().setSpacing(0)
+        _collapsible.addWidget(_options_wdg)
+
+        # generate button
         self._generate_mask_btn = QPushButton("Generate Masks")
         self._generate_mask_btn.clicked.connect(self.generateSignal.emit)
 
-        collapsible = QCollapsible("Options")
-        collapsible.layout().setContentsMargins(0, 0, 0, 0)
+        # min/max area filter
+        _filer_group = QGroupBox("Area Filter")
+        _filer_layout = QHBoxLayout(_filer_group)
+        self._min_max_wdg = AreaFilterWidget()
+        self._filter_btn = QPushButton("Filter")
+        self._filter_btn.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
+        )
+        self._filter_btn.clicked.connect(self._on_filter)
+        _filer_layout.addWidget(self._min_max_wdg)
+        _filer_layout.addWidget(self._filter_btn)
 
-        collapsible.addWidget(_options_wdg)
+        # main layout
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(0)
-        main_layout.addWidget(collapsible)
+        main_layout.setSpacing(10)
+        main_layout.addWidget(_collapsible)
+        main_layout.addWidget(_filer_group)
         main_layout.addWidget(self._generate_mask_btn)
+
+    def value(self) -> tuple[int, int]:
+        """Return the min and max area values."""
+        return self._min_max_wdg.value()
+
+    def _on_filter(self) -> None:
+        """Emit the filter signal with the min and max area values."""
+        self.filterSignal.emit(self.value())
+
+
+class AreaFilterWidget(QWidget):
+    """Widget for setting the min and max area values."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+
+        _max_area_lbl = QLabel("Maximum:")
+        _max_area_lbl.setSizePolicy(FIXED)
+        self._max_area = QSpinBox()
+        self._max_area.setMinimum(0)
+        self._max_area.setMaximum(1000000)
+        self._max_area.setValue(1000000)
+        self._max_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        _min_area_lbl = QLabel("Minimum:")
+        _min_area_lbl.setSizePolicy(FIXED)
+        self._min_area = QSpinBox()
+        self._min_area.setMinimum(0)
+        self._min_area.setMaximum(1000000)
+        self._min_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout = QGridLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+        layout.addWidget(_min_area_lbl, 0, 0)
+        layout.addWidget(self._min_area, 0, 1)
+        layout.addWidget(_max_area_lbl, 1, 0)
+        layout.addWidget(self._max_area, 1, 1)
+
+    def value(self) -> tuple[int, int]:
+        """Return the min and max area values."""
+        return self._min_area.value(), self._max_area.value()

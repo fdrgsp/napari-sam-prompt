@@ -15,7 +15,8 @@ jobs:
       matrix:
         platform: [windows-latest, macos-latest]
         python-version: ["3.9", "3.10", "3.11"]
-        backend: [pyside6, pyqt6]
+        # backend: [pyside6, pyqt6]  # there is an error with pyside6 and napari. will add it later on
+        backend: [pyqt6]
     
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +44,7 @@ jobs:
       - name: Test
         uses: GabrielBB/xvfb-action@v1
         with:
-          run: python -m pytest -v --color=yes --cov=napari_micromanager --cov-report=xml
+          run: python -m pytest -v --color=yes --cov=napari_sam_prompt --cov-report=xml
 
       - name: Coverage
         uses: codecov/codecov-action@v4
