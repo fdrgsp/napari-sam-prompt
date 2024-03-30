@@ -32,10 +32,10 @@ test = [
     "torchvision",
     "segment_anything @ git+https://github.com/facebookresearch/segment-anything.git"
 ]
-pyqt5 = ["PyQt5"]
 pyqt6 = ["PyQt6"]
-pyside2 = ["PySide2"]
-pyside6 = ["PySide6"]
+# pyqt5 = ["PyQt5"]
+# pyside2 = ["PySide2"]
+# pyside6 = ["PySide6"]
 dev = ["isort", "mypy", "pre-commit", "ruff"]
 docs = ["mkdocs-material", "mkdocstrings-python"]
 
