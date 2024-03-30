@@ -712,14 +712,15 @@ class SamPromptWidget(QWidget):
         logging.info(msg)
 
         if mode == POINTS:
-            prompts = [(int(point[1]), int(point[0])) for point in prompts]
+            # invert the points to be in the correct (x, y) format
+            prompts = list(np.flip(prompts, axis=-1))
         else:  # mode == BOXES:
             # prompt as need to be top_left and bottom_right coordinates
             boxes = []
             for box in prompts:
-                top_left = (int(box[0][1]), int(box[0][0]))
-                bottom_right = (int(box[2][1]), int(box[2][0]))
-                boxes.append((*top_left, *bottom_right))
+                box = np.stack([box.min(axis=0), box.max(axis=0)], axis=0)
+                box = np.flip(box, -1).reshape(-1)[None, ...]
+                boxes.append([box])
             prompts = boxes
 
         # if the current image has already prompts for the current mode and the length
