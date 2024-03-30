@@ -55,6 +55,9 @@ source = "vcs"
 [tool.hatch.build.targets.sdist]
 include = ["/src", "/tests"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 # https://beta.ruff.rs/docs/rules/
 [tool.ruff]
 line-length = 88
