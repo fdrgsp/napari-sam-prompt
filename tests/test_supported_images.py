@@ -17,7 +17,8 @@ data = [
     # imagenp.ndarray,              x_axis_index,   y_axis_index
     (np.random.rand(100, 100), 0, 1),
     # (np.random.rand(100, 100, 3),   0,              1),
-    # (np.random.rand(2, 100, 100),   1,              2),
+    # (np.random.rand(100, 100, 6),   0,              1),
+    # (np.random.rand(2, 100, 100),   0,              1),
 ]
 
 
