@@ -8,6 +8,7 @@ import napari.layers
 import napari.viewer
 import numpy as np
 import torch
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QComboBox,
     QGridLayout,
@@ -29,6 +30,7 @@ from napari_sam_prompt._sub_widgets._load_model_widget import LoadModelWidget
 from napari_sam_prompt._sub_widgets._predictor_widget import (
     BOXES,
     POINTS,
+    POINTS_FB,
     PredictorWidget,
 )
 
@@ -48,6 +50,10 @@ EMBEDDINGS = "embeddings"
 MASKS = "masks"
 SCORES = "scores"
 COORDS = "coords"
+FWD_BKG = "fwd_or_bkg"
+GREEN = "green"
+MAGENTA = "magenta"
+MAGENTA_CODE = [1, 0, 1, 1]
 
 logging.basicConfig(
     # filename="napari_sam_prompt.log", # uncomment to log to a file in this directory
@@ -94,8 +100,6 @@ class SamPromptWidget(QWidget):
 
         self._current_image: str = ""
 
-        self._setting_image: bool = False
-
         # this is to store all the info form the automatic mask generator and the
         # predictor. This is added to the napari console so we can check the info
         # TODO: maybe use dataclass
@@ -119,11 +123,19 @@ class SamPromptWidget(QWidget):
         #                 MASKS: list[np.ndarray],
         #                 SCORES: list[float],
         #                 COORDS: list[tuple[int, int]],
+        #                 FWD_BKG: list[int],
+        #             },
+        #             POINTS_FB: {
+        #                 MASKS: list[np.ndarray],
+        #                 SCORES: list[float],
+        #                 COORDS: list[tuple[int, int]],
+        #                 FWD_BKG: list[int],
         #             },
         #             BOXES: {
         #                 MASKS: list[np.ndarray],
         #                 SCORES: list[float],
         #                 COORDS: list[tuple[int, int, int, int]],
+        #                 FWD_BKG: list[int],
         #             },
         #         },
         #     }
@@ -156,6 +168,7 @@ class SamPromptWidget(QWidget):
         # add predictor widget
         self._predictor_widget = PredictorWidget()
         self._predictor_widget.addLayersSignal.connect(self._add_layers)
+        self._predictor_widget.predictSignal.connect(self._on_predict_signal)
 
         # info group
         _info_group = QGroupBox("Info")
@@ -189,6 +202,11 @@ class SamPromptWidget(QWidget):
 
         if self._console:
             self._console.push({"info": self._stored_info})
+
+    def _message_to_log(self, msg: str) -> None:
+        """Log the message and display it in the info label."""
+        self._info_lbl.setText(msg)
+        logging.info(msg)
 
     def _enable_widgets(self, state: bool) -> None:
         """Enable or disable the widget."""
@@ -235,8 +253,9 @@ class SamPromptWidget(QWidget):
                     PREDICTOR: {
                         IMAGE_SET: False,
                         EMBEDDINGS: None,
-                        POINTS: {MASKS: [], SCORES: [], COORDS: []},
-                        BOXES: {MASKS: [], SCORES: [], COORDS: []},
+                        POINTS: {MASKS: [], SCORES: [], COORDS: [], FWD_BKG: []},
+                        POINTS_FB: {MASKS: [], SCORES: [], COORDS: [], FWD_BKG: []},
+                        BOXES: {MASKS: [], SCORES: [], COORDS: [], FWD_BKG: []},
                     },
                 }
 
@@ -348,7 +367,7 @@ class SamPromptWidget(QWidget):
     def _on_generate(self) -> None:
         """Start the mask generation."""
         if self._sam is None:
-            self._info_lbl.setText("Load a SAM model first.")
+            self._message_to_log("Load a SAM model first.")
             return
 
         if (
@@ -356,11 +375,10 @@ class SamPromptWidget(QWidget):
             or not self._current_image
             or self._current_image not in self._viewer.layers
         ):
-            self._info_lbl.setText("No image layer selected.")
+            self._message_to_log("No image layer selected.")
             return
 
-        self._info_lbl.setText("Generating masks...")
-        logging.info("Generating masks...")
+        self._message_to_log("Generating masks...")
 
         try:
             self._init_generator()
@@ -426,11 +444,9 @@ class SamPromptWidget(QWidget):
         """Enable the widget after the prediction is finished."""
         self._enable_all(True)
         if self._success:
-            self._info_lbl.setText("Automatic Mask Generator finished.")
-            logging.info("Automatic Mask Generator finished.")
+            self._message_to_log("Automatic Mask Generator finished.")
         else:
-            self._info_lbl.setText("Error while running the Automatic Mask Generator!")
-            logging.error("Error while running the Automatic Mask Generator!")
+            self._message_to_log("Error while running the Automatic Mask Generator!")
 
     @ensure_main_thread  # type: ignore [misc]
     def _display_labels_auto_segmentation(self, masks: list[np.ndarray]) -> None:
@@ -451,9 +467,7 @@ class SamPromptWidget(QWidget):
         # filter the masks by area
         filtered_masks = self._filter_mask_by_area(masks)
         if len(filtered_masks) == 0:
-            msg = "No masks found. Adjust the area filter."
-            self._info_lbl.setText(msg)
-            logging.info(msg)
+            self._message_to_log("No masks found. Adjust the area filter.")
             return
 
         # update the labels layer with the filtered masks
@@ -480,19 +494,17 @@ class SamPromptWidget(QWidget):
         try:
             labels_layer = cast(napari.layers.Labels, self._viewer.layers[labels_name])
         except KeyError:
-            msg = "No Label Layer found. Run the `Automatic Mask Generator` first."
-            self._info_lbl.setText(msg)
-            logging.info(msg)
+            self._message_to_log(
+                "No Label Layer found. Run the `Automatic Mask Generator` first."
+            )
             return
 
         masks = self._stored_info.get(self._current_image, {}).get(AUTO_MASK, [])
         if not masks:
-            msg = (
+            self._message_to_log(
                 "No masks found. Run the `Automatic Mask Generator first or adjust the "
                 "area filter parameters."
             )
-            self._info_lbl.setText(msg)
-            logging.info(msg)
             return
 
         # filter the masks by area
@@ -507,12 +519,12 @@ class SamPromptWidget(QWidget):
     def _prepare_and_run_predictor(self, layer: napari.layers) -> None:
         """Prepare the predictor and run it on the current image."""
         if self._predictor is None:
-            self._info_lbl.setText("Load a SAM model first.")
+            self._message_to_log("Load a SAM model first.")
             return
 
         # if self._current_image not in self._image_set:
         if self._current_image not in self._stored_info:
-            self._info_lbl.setText("No image layer selected.")
+            self._message_to_log("No image layer selected.")
             return
 
         predictor_info = self._stored_info[self._current_image][PREDICTOR]
@@ -524,11 +536,8 @@ class SamPromptWidget(QWidget):
         # if the image have never been set to the predictor, set it in another thread
         # and when finished, run the predictor
         if not image_set or embeddings is None:
-            self._setting_image = True
             self._image_to_predictor_msg.show()
-            msg = "Setting the image to the predictor..."
-            self._info_lbl.setText(msg)
-            logging.info(msg)
+            self._message_to_log("Setting the image to the predictor...")
             create_worker(
                 self._image_to_predictor,
                 _start_thread=True,
@@ -538,9 +547,7 @@ class SamPromptWidget(QWidget):
         # if the image has been set to the predictor but the embeddings are different
         # set the embeddings to the predictor from the _image_set variable
         elif not torch.allclose(self._predictor.features, embeddings):
-            msg = "Setting the image embeddings to the predictor..."
-            self._info_lbl.setText(msg)
-            logging.info(msg)
+            self._message_to_log("Setting the image embeddings to the predictor...")
             self._set_image_embeddings_to_predictor(image_set, embeddings)
             prompts = layer.data
             try:
@@ -579,30 +586,24 @@ class SamPromptWidget(QWidget):
         """Enable the widget after setting the image to the predictor."""
         self._enable_all(True)
 
-        self._setting_image = False
-
         self._image_to_predictor_msg.hide()
 
         predictor_info = self._stored_info[self._current_image][PREDICTOR]
         image_set = predictor_info.get(IMAGE_SET)
         embeddings = predictor_info.get(EMBEDDINGS)
         if image_set and embeddings is not None:
-            msg = "Image set to the predictor."
-            self._info_lbl.setText(msg)
-            logging.info(msg)
+            self._message_to_log("Image set to the predictor.")
             prompts = layer.data
             self._on_predict(self._predictor_widget.mode(), prompts)
         else:
-            msg = "Error while setting the image to the predictor!"
-            self._info_lbl.setText(msg)
-            logging.error(msg)
+            self._message_to_log("Error while setting the image to the predictor!")
 
     def _set_image_embeddings_to_predictor(
         self, image_set: bool, embeddings: torch.Tensor
     ) -> bool:
         """Set the image embeddings to the predictor."""
         if self._predictor is None:
-            self._info_lbl.setText("Load a SAM model first.")
+            self._message_to_log("Load a SAM model first.")
             return False
         if image_set and embeddings is not None:
             self._predictor.features = embeddings
@@ -616,42 +617,84 @@ class SamPromptWidget(QWidget):
         if not self._current_image:
             return
 
+        # get the prompts layer metadata
         layers_meta = [
             (lay.metadata.get("prompt"), lay.metadata.get("id"))
             for lay in self._viewer.layers
         ]
+        # add the prompt layer depending on the mode
+        if mode in [POINTS, POINTS_FB]:
+            self._add_points_layer(layers_meta, mode)
+        elif mode == BOXES and (BOXES, self._current_image) not in layers_meta:
+            self._add_shapes_layer()
 
-        if mode == POINTS and (POINTS, self._current_image) not in layers_meta:
+    def _add_points_layer(self, layers_meta: list[tuple[str, str]], mode: str) -> None:
+        """Add the points layer for the points prompts."""
+        meta = {"id": self._current_image}
+
+        if (mode, self._current_image) in layers_meta:
+            return
+
+        meta["prompt"] = mode
+        name = f"{self._current_image} [{mode.upper()}]"
+        # if there is no points layer, add one
+        if meta.get("prompt") and name:
             layer = self._viewer.add_points(
-                name=f"{self._current_image} [{POINTS.upper()}]",
+                name=name,
                 ndim=2,
-                metadata={"prompt": POINTS, "id": self._current_image},
-                edge_color="green",
-                face_color="green",
+                metadata=meta,
+                edge_color=GREEN,
+                face_color=GREEN,
             )
             layer.mode = "add"
-            layer.events.data.connect(self._data_changed)
+            if mode == POINTS:
+                layer.events.data.connect(self._data_changed)
+            elif mode == POINTS_FB:
+                layer.mouse_drag_callbacks.append(self._change_color_on_mouse_click)
 
-        elif mode == BOXES and (BOXES, self._current_image) not in layers_meta:
-            layer = self._viewer.add_shapes(
-                name=f"{self._current_image} [{BOXES.upper()}]",
-                ndim=2,
-                metadata={"prompt": BOXES, "id": self._current_image},
-                face_color="white",
-                edge_color="green",
-                edge_width=3,
-                opacity=0.4,
-                blending="translucent",
+    def _add_shapes_layer(self) -> None:
+        """Add the shapes layer for the boxes prompts."""
+        layer = self._viewer.add_shapes(
+            name=f"{self._current_image} [{BOXES.upper()}]",
+            ndim=2,
+            metadata={"prompt": BOXES, "id": self._current_image},
+            face_color="white",
+            edge_color=GREEN,
+            edge_width=3,
+            opacity=0.4,
+            blending="translucent",
+        )
+        layer.mode = "add_rectangle"
+        layer.events.data.connect(self._data_changed)
+
+    def _change_color_on_mouse_click(
+        self, points_layer: napari.layers.Points, event: Event
+    ) -> None:
+        # clear any selected points
+        points_layer.selected_data = []
+        # set the green color (F) on left click and magenta (B) on right click
+        if event.button == Qt.MouseButton.LeftButton.value:
+            points_layer.current_face_color = GREEN
+            points_layer.current_edge_color = GREEN
+        else:
+            points_layer.current_face_color = MAGENTA
+            points_layer.current_edge_color = MAGENTA
+
+    def _on_predict_signal(self) -> None:
+        """Run the predictor with foreground and background points."""
+        try:
+            layer_name = f"{self._current_image} [{POINTS_FB.upper()}]"
+            layer = self._viewer.layers[layer_name]
+        except KeyError:
+            self._message_to_log(
+                "No Foreground and Background points layer found. Click on the 'Add "
+                "Points Layers' button first and add foreground and background points."
             )
-            layer.mode = "add_rectangle"
-            layer.events.data.connect(self._data_changed)
+            return
+        self._prepare_and_run_predictor(layer)
 
     def _data_changed(self, event: Event) -> None:
         """Handle the data change event and run the predictor."""
-        # return if the image is being set to the predictor
-        if self._setting_image:
-            return
-
         layer = cast(napari.layers, event.source)
 
         # clear the prompt layer if predictor is not set
@@ -659,7 +702,7 @@ class SamPromptWidget(QWidget):
             # block to avoid recursion
             with layer.events.data.blocker():
                 layer.data = []
-            self._info_lbl.setText("Load a SAM model first.")
+            self._message_to_log("Load a SAM model first.")
             return
 
         # stored = self._prompts_coords.get(self._current_image)
@@ -698,20 +741,19 @@ class SamPromptWidget(QWidget):
     def _clear_mode_info(self, mode: str) -> None:
         """Clear the stored info for the current mode."""
         self._stored_info[self._current_image][PREDICTOR][mode][COORDS] = []
+        self._stored_info[self._current_image][PREDICTOR][mode][FWD_BKG] = []
         self._stored_info[self._current_image][PREDICTOR][mode][MASKS] = []
         self._stored_info[self._current_image][PREDICTOR][mode][SCORES] = []
 
     def _on_predict(self, mode: str, prompts: np.ndarray) -> None:
         """Prepare the prompts and run the predictor."""
         if self._sam is None or self._predictor is None:
-            self._info_lbl.setText("Load a SAM model first.")
+            self._message_to_log("Load a SAM model first.")
             return
 
-        msg = f"Running Predictor with {mode} Prompts..."
-        self._info_lbl.setText(msg)
-        logging.info(msg)
+        self._message_to_log(f"Running Predictor with {mode} Prompts...")
 
-        if mode == POINTS:
+        if mode in {POINTS, POINTS_FB}:
             # invert the points to be in the correct (x, y) format
             prompts = list(np.flip(prompts, axis=-1))
         else:  # mode == BOXES:
@@ -723,19 +765,27 @@ class SamPromptWidget(QWidget):
                 boxes.append([box])
             prompts = boxes
 
-        # if the current image has already prompts for the current mode and the length
-        # of the new prompts is less than the existing prompts, means thet the user
-        # removed a prompts, so we need re-run the predictor with the new prompts
-        predictor_info = self._stored_info[self._current_image][PREDICTOR]
-        if stored_prompts := predictor_info.get(mode, []):
-            n_prompts = len(stored_prompts[COORDS])
-            # use only the last added prompt
-            updated_prompts = [prompts[-1]] if len(prompts) > n_prompts else prompts
-        else:
+        if mode == POINTS_FB:
             updated_prompts = prompts
+        else:
+            # if the current image has already prompts for the current mode and the
+            # length of the new prompts is less than the existing one, means that the
+            # user removed a prompts, so we need run the predictor with the new prompts
+            predictor_info = self._stored_info[self._current_image][PREDICTOR]
+            if stored_prompts := predictor_info.get(mode, []):
+                n_prompts = len(stored_prompts[COORDS])
+                # use only the last added prompt
+                updated_prompts = [prompts[-1]] if len(prompts) > n_prompts else prompts
+            else:
+                updated_prompts = prompts
 
-        # update the prompts coordinates
+        # update the prompts coordinates and forward or background points.
+        # NOTE: for the POINTS_FB mode, the forward or background points will be
+        # updated in the _predict_with_points_fb method
         self._stored_info[self._current_image][PREDICTOR][mode][COORDS] = prompts
+        self._stored_info[self._current_image][PREDICTOR][mode][FWD_BKG] = [
+            [1] * len(prompts)
+        ]
 
         # run the predictor
         self._predict_worker(mode, updated_prompts)
@@ -768,6 +818,8 @@ class SamPromptWidget(QWidget):
 
             if mode == POINTS:
                 masks, scores = self._predict_with_points(prompts, store)
+            elif mode == POINTS_FB:
+                masks, scores = self._predict_with_points_fb(prompts, store)
             elif mode == BOXES:
                 masks, scores = self._predict_with_boxes(prompts, store)
 
@@ -820,6 +872,34 @@ class SamPromptWidget(QWidget):
 
         return masks, scores
 
+    def _predict_with_points_fb(
+        self, prompts: np.ndarray, store: dict
+    ) -> tuple[list[np.ndarray], list[float]]:
+        layer = cast(
+            napari.layers.Points,
+            self._viewer.layers[f"{self._current_image} [{POINTS_FB.upper()}]"],
+        )
+        # get foreground or background points depending on the color
+        point_labels = [
+            0 if all(layer.face_color[idx] == MAGENTA_CODE) else 1
+            for idx, _ in enumerate(prompts)
+        ]
+
+        self._predictor = cast(SamPredictor, self._predictor)
+        masks, score, _ = self._predictor.predict(
+            point_coords=np.array(prompts),
+            point_labels=np.array(point_labels),
+            multimask_output=False,
+        )
+
+        store[MASKS].append(masks)
+        store[SCORES].append(score)
+        store[FWD_BKG].append(point_labels)
+
+        self._stored_info[self._current_image][PREDICTOR][POINTS_FB] = store
+
+        return masks, score
+
     def _predict_with_boxes(
         self, prompts: np.ndarray, store: dict
     ) -> tuple[np.ndarray, list[float]]:
@@ -859,11 +939,9 @@ class SamPromptWidget(QWidget):
         """Enable the widget after the prediction is finished."""
         self._enable_all(True)
         if self._success:
-            self._info_lbl.setText("Predictor finished.")
-            logging.info("Predictor finished.")
+            self._message_to_log("Predictor finished.")
         else:
-            self._info_lbl.setText("Error while running the Predictor!")
-            logging.error("Error while running the Predictor!")
+            self._message_to_log("Error while running the Predictor!")
 
     @ensure_main_thread  # type: ignore [misc]
     def _display_labels_predictor(

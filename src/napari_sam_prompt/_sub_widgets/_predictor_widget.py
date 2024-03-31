@@ -13,12 +13,12 @@ from qtpy.QtWidgets import (
 FIXED = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 POINTS = "Points Prompts"
 BOXES = "Boxes Prompts"
-STANDARD = "standard"
-LOOP = "loop"
+POINTS_FB = "Points Prompts [F&B]"
 
 
 class PredictorWidget(QGroupBox):
     addLayersSignal = Signal(object)
+    predictSignal = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -26,11 +26,18 @@ class PredictorWidget(QGroupBox):
         self.setTitle("SAM Predictor")
 
         self._mode_combo = QComboBox()
-        self._mode_combo.addItems([POINTS, BOXES])
+        self._mode_combo.addItems([POINTS, POINTS_FB, BOXES])
         self._mode_combo.currentIndexChanged.connect(self._on_combo_changed)
 
         self._add_layer_btn = QPushButton()
         self._add_layer_btn.clicked.connect(self._on_add_layers)
+
+        self._predict_btn = QPushButton("Predict")
+        self._predict_btn.setToolTip(
+            "Use 'green' points to set foreground prompts and 'magenta' points to set "
+            "background prompts."
+        )
+        self._predict_btn.clicked.connect(self.predictSignal.emit)
 
         # main layout
         _layout = QHBoxLayout(self)
@@ -39,6 +46,7 @@ class PredictorWidget(QGroupBox):
 
         _layout.addWidget(self._mode_combo)
         _layout.addWidget(self._add_layer_btn)
+        _layout.addWidget(self._predict_btn)
 
         self._on_combo_changed()
 
@@ -53,4 +61,6 @@ class PredictorWidget(QGroupBox):
         self.addLayersSignal.emit(self.mode())
 
     def _on_combo_changed(self) -> None:
+        mode = self.mode()
+        self._predict_btn.show() if mode == POINTS_FB else self._predict_btn.hide()
         self._add_layer_btn.setText(f"Add {self.mode().split(' ')[0]} Layers")
