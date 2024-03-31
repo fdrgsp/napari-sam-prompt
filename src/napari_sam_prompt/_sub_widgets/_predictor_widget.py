@@ -33,6 +33,10 @@ class PredictorWidget(QGroupBox):
         self._add_layer_btn.clicked.connect(self._on_add_layers)
 
         self._predict_btn = QPushButton("Predict")
+        self._predict_btn.setToolTip(
+            "Use 'green' points to set foreground prompts and 'magenta' points to set "
+            "background prompts."
+        )
         self._predict_btn.clicked.connect(self.predictSignal.emit)
 
         # main layout
