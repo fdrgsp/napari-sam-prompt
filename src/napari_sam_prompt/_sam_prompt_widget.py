@@ -691,6 +691,7 @@ class SamPromptWidget(QWidget):
                 "Points Layers' button first and add foreground and background points."
             )
             return
+
         self._prepare_and_run_predictor(layer)
 
     def _data_changed(self, event: Event) -> None:
@@ -749,6 +750,18 @@ class SamPromptWidget(QWidget):
         """Prepare the prompts and run the predictor."""
         if self._sam is None or self._predictor is None:
             self._message_to_log("Load a SAM model first.")
+            self._enable_all(True)
+            return
+
+        # if shapes
+        if isinstance(prompts, list) and not prompts:
+            self._message_to_log("No boxes prompts found. Add any boxes first.")
+            self._enable_all(True)
+            return
+        # if points
+        elif isinstance(prompts, np.ndarray) and prompts.size == 0:
+            self._message_to_log("No points prompts found. Add any points first.")
+            self._enable_all(True)
             return
 
         self._message_to_log(f"Running Predictor with {mode} Prompts...")
@@ -892,9 +905,9 @@ class SamPromptWidget(QWidget):
             multimask_output=False,
         )
 
-        store[MASKS].append(masks)
-        store[SCORES].append(score)
-        store[FWD_BKG].append(point_labels)
+        store[MASKS] = masks
+        store[SCORES] = score
+        store[FWD_BKG] = point_labels
 
         self._stored_info[self._current_image][PREDICTOR][POINTS_FB] = store
 
@@ -954,6 +967,7 @@ class SamPromptWidget(QWidget):
         name = f"{layer_name}_LABELS [{mode.upper()}]"
 
         stored = self._stored_info.get(layer_name)
+
         if stored is None:
             # first time
             self._viewer.add_labels(masks, name=name, metadata={"id": layer_name})
@@ -963,24 +977,51 @@ class SamPromptWidget(QWidget):
             if len(stored_masks) == 0:
                 return
 
-            mask_for_labels = self._masks_for_labels(stored_masks)
-            try:
-                labels = cast(napari.layers.Labels, self._viewer.layers[name])
-                labels.data = mask_for_labels
-            except KeyError:
-                self._viewer.add_labels(
-                    mask_for_labels, name=name, metadata={"id": layer_name}
-                )
+            if mode == POINTS_FB:
+                try:
+                    # get the labels layer and the current data to be updated
+                    labels_layer = cast(napari.layers.Labels, self._viewer.layers[name])
+                    labels = self._update_labels_from_masks(
+                        stored_masks, labels_layer.data
+                    )
+                    labels_layer.data = labels
+                except KeyError:
+                    labels = self._update_labels_from_masks(stored_masks)
+                    self._viewer.add_labels(
+                        labels, name=name, metadata={"id": layer_name}
+                    )
+
+                # clear the points_fb layer
+                with contextlib.suppress(KeyError):
+                    layer = self._viewer.layers[f"{layer_name} [{mode.upper()}]"]
+                    with layer.events.data.blocker():
+                        layer.data = []
+
+            else:
+                labels = self._update_labels_from_masks(stored_masks)
+                try:
+                    labels_layer = cast(napari.layers.Labels, self._viewer.layers[name])
+                    labels_layer.data = labels
+                except KeyError:
+                    self._viewer.add_labels(
+                        labels, name=name, metadata={"id": layer_name}
+                    )
 
         # keep the prompt layer as the active layer
         prompt_layer = self._viewer.layers[f"{layer_name} [{mode.upper()}]"]
         self._viewer.layers.selection.active = prompt_layer
 
-    def _masks_for_labels(self, masks: list[np.ndarray]) -> np.ndarray:
+    def _update_labels_from_masks(
+        self, masks: list[np.ndarray], labels_data: np.ndarray | None = None
+    ) -> np.ndarray:
         """Create the mask data to be used in the labels layer."""
-        final_mask = np.zeros_like(masks[0], dtype=np.int32)
+        labels_data = (
+            np.zeros_like(masks[0], dtype=np.int32)
+            if labels_data is None
+            else labels_data
+        )
         for mask in masks:
             labeled_mask = measure.label(mask)
-            labeled_mask[labeled_mask != 0] += final_mask.max()
-            final_mask += labeled_mask
-        return final_mask
+            labeled_mask[labeled_mask != 0] += labels_data.max()
+            labels_data += labeled_mask
+        return labels_data
