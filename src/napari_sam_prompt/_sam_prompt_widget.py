@@ -750,15 +750,18 @@ class SamPromptWidget(QWidget):
         """Prepare the prompts and run the predictor."""
         if self._sam is None or self._predictor is None:
             self._message_to_log("Load a SAM model first.")
+            self._enable_all(True)
             return
 
         # if shapes
         if isinstance(prompts, list) and not prompts:
             self._message_to_log("No boxes prompts found. Add any boxes first.")
+            self._enable_all(True)
             return
         # if points
         elif isinstance(prompts, np.ndarray) and prompts.size == 0:
             self._message_to_log("No points prompts found. Add any points first.")
+            self._enable_all(True)
             return
 
         self._message_to_log(f"Running Predictor with {mode} Prompts...")
@@ -978,9 +981,10 @@ class SamPromptWidget(QWidget):
                 try:
                     # get the labels layer and the current data to be updated
                     labels_layer = cast(napari.layers.Labels, self._viewer.layers[name])
-                    labels_data = labels_layer.data
-                    labels = self._update_labels_from_masks(stored_masks, labels_data)
-                    labels_layer.data = labels_data
+                    labels = self._update_labels_from_masks(
+                        stored_masks, labels_layer.data
+                    )
+                    labels_layer.data = labels
                 except KeyError:
                     labels = self._update_labels_from_masks(stored_masks)
                     self._viewer.add_labels(
