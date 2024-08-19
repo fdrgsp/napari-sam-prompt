@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from napari.layers import Image
+
 from napari_sam_prompt._util import _convert_image
 
 data = [
