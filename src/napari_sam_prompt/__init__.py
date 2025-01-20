@@ -9,4 +9,4 @@ except PackageNotFoundError:
 
 from ._sam_prompt_widget import SamPromptWidget
 
-__all__ = ["__version__", "SamPromptWidget"]
+__all__ = ["SamPromptWidget", "__version__"]
