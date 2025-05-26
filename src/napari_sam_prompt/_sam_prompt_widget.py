@@ -262,7 +262,7 @@ class SamPromptWidget(QWidget):
     def _on_layer_selected(self, e: Event) -> None:
         """Change the current image to the selected layer and update the combo box."""
         with contextlib.suppress(Exception):
-            active_layer = cast(napari.layers, e.source.active)
+            active_layer = cast("napari.layers", e.source.active)
             layer_name = active_layer.name
 
             prompt_layer = False
@@ -428,7 +428,9 @@ class SamPromptWidget(QWidget):
     def _generate(self, image: np.ndarray) -> Generator[list[np.ndarray], None, None]:
         """Generate masks using the SAM Automatic Mask Generator."""
         try:
-            self._mask_generator = cast(SamAutomaticMaskGenerator, self._mask_generator)
+            self._mask_generator = cast(
+                "SamAutomaticMaskGenerator", self._mask_generator
+            )
             masks = self._mask_generator.generate(image)
             self._stored_info[self._current_image][AUTO_MASK] = masks
             self._success = True
@@ -457,7 +459,7 @@ class SamPromptWidget(QWidget):
 
         name = f"{layer_name}_labels [Automatic]"
         try:
-            labels = cast(napari.layers.Labels, self._viewer.layers[name])
+            labels = cast("napari.layers.Labels", self._viewer.layers[name])
             labels.data = final_mask
         except KeyError:
             self._viewer.add_labels(final_mask, name=name, metadata={"id": layer_name})
@@ -492,7 +494,9 @@ class SamPromptWidget(QWidget):
         """Filter the masks by area and display the labels."""
         labels_name = f"{self._current_image}_labels [Automatic]"
         try:
-            labels_layer = cast(napari.layers.Labels, self._viewer.layers[labels_name])
+            labels_layer = cast(
+                "napari.layers.Labels", self._viewer.layers[labels_name]
+            )
         except KeyError:
             self._message_to_log(
                 "No Label Layer found. Run the `Automatic Mask Generator` first."
@@ -568,7 +572,7 @@ class SamPromptWidget(QWidget):
         """Set the image to the predictor."""
         try:
             image = _convert_image(self._viewer.layers[self._current_image])
-            self._predictor = cast(SamPredictor, self._predictor)
+            self._predictor = cast("SamPredictor", self._predictor)
             self._predictor.set_image(image)
 
             # store the image embeddings
@@ -696,7 +700,7 @@ class SamPromptWidget(QWidget):
 
     def _data_changed(self, event: Event) -> None:
         """Handle the data change event and run the predictor."""
-        layer = cast(napari.layers, event.source)
+        layer = cast("napari.layers", event.source)
 
         # clear the prompt layer if predictor is not set
         if self._predictor is None:
@@ -719,7 +723,7 @@ class SamPromptWidget(QWidget):
                 self._clear_mode_info(mode)
                 # delete the labels layer
                 with contextlib.suppress(KeyError):
-                    labels = cast(napari.layers.Labels, self._viewer.layers[name])
+                    labels = cast("napari.layers.Labels", self._viewer.layers[name])
                     self._viewer.layers.remove(labels)
 
             else:
@@ -732,7 +736,7 @@ class SamPromptWidget(QWidget):
 
                 # clearing the labels layer
                 with contextlib.suppress(KeyError):
-                    labels = cast(napari.layers.Labels, self._viewer.layers[name])
+                    labels = cast("napari.layers.Labels", self._viewer.layers[name])
                     labels.data = np.zeros_like(labels.data)
                 self._prepare_and_run_predictor(layer)
 
@@ -825,7 +829,7 @@ class SamPromptWidget(QWidget):
         self, mode: str, prompts: np.ndarray
     ) -> Generator[tuple[list[np.ndarray], list[float], str], None, None]:
         try:
-            self._predictor = cast(SamPredictor, self._predictor)
+            self._predictor = cast("SamPredictor", self._predictor)
 
             store = self._stored_info[self._current_image][PREDICTOR][mode]
 
@@ -857,7 +861,7 @@ class SamPromptWidget(QWidget):
         some of the points were removed. So we need to re-run the predictor with the new
         prompts.
         """
-        self._predictor = cast(SamPredictor, self._predictor)
+        self._predictor = cast("SamPredictor", self._predictor)
         if len(prompts) == 1:
             masks, scores, _ = self._predictor.predict(
                 point_coords=np.array(prompts),
@@ -889,7 +893,7 @@ class SamPromptWidget(QWidget):
         self, prompts: np.ndarray, store: dict
     ) -> tuple[list[np.ndarray], list[float]]:
         layer = cast(
-            napari.layers.Points,
+            "napari.layers.Points",
             self._viewer.layers[f"{self._current_image} [{POINTS_FB.upper()}]"],
         )
         # get foreground or background points depending on the color
@@ -898,7 +902,7 @@ class SamPromptWidget(QWidget):
             for idx, _ in enumerate(prompts)
         ]
 
-        self._predictor = cast(SamPredictor, self._predictor)
+        self._predictor = cast("SamPredictor", self._predictor)
         masks, score, _ = self._predictor.predict(
             point_coords=np.array(prompts),
             point_labels=np.array(point_labels),
@@ -925,7 +929,7 @@ class SamPromptWidget(QWidget):
         some of the boxes were removed. So we need to re-run the predictor with the new
         prompts.
         """
-        self._predictor = cast(SamPredictor, self._predictor)
+        self._predictor = cast("SamPredictor", self._predictor)
         if len(prompts) == 1:
             masks, scores, _ = self._predictor.predict(
                 box=np.array([prompts]), multimask_output=False
@@ -980,7 +984,9 @@ class SamPromptWidget(QWidget):
             if mode == POINTS_FB:
                 try:
                     # get the labels layer and the current data to be updated
-                    labels_layer = cast(napari.layers.Labels, self._viewer.layers[name])
+                    labels_layer = cast(
+                        "napari.layers.Labels", self._viewer.layers[name]
+                    )
                     labels = self._update_labels_from_masks(
                         stored_masks, labels_layer.data
                     )
@@ -1000,7 +1006,9 @@ class SamPromptWidget(QWidget):
             else:
                 labels = self._update_labels_from_masks(stored_masks)
                 try:
-                    labels_layer = cast(napari.layers.Labels, self._viewer.layers[name])
+                    labels_layer = cast(
+                        "napari.layers.Labels", self._viewer.layers[name]
+                    )
                     labels_layer.data = labels
                 except KeyError:
                     self._viewer.add_labels(
